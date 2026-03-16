@@ -70,6 +70,7 @@ async function startWebServer(pythonPath: string, workspaceRoot: string): Promis
 		// Check if main.db exists
 		const dbPath = path.join(workspaceRoot, 'main.db');
 		if (!fs.existsSync(dbPath)) {
+			vscode.window.showErrorMessage('No main.db found in workspace root');
 			console.log('No main.db found in workspace root');
 			return;
 		}
