@@ -28,6 +28,56 @@ let debugPollingInterval: NodeJS.Timeout | null = null;
 // Add a flag to track programmatic selection changes, export it for use in highlight.ts
 export let isProgrammaticSelectionChange = false;
 
+function resolveEmptyDbTemplatePath(workspaceRoot: string): string | null {
+	const candidatePaths = [
+		path.join(extensionContext?.extensionPath ?? '', 'main-empty.db'),
+		path.join(workspaceRoot, 'main-empty.db')
+	];
+
+	for (const candidatePath of candidatePaths) {
+		if (candidatePath && fs.existsSync(candidatePath)) {
+			return candidatePath;
+		}
+	}
+
+	return null;
+}
+
+async function ensureMainDbExists(workspaceRoot: string): Promise<boolean> {
+	const dbPath = path.join(workspaceRoot, 'main.db');
+	if (fs.existsSync(dbPath)) {
+		return true;
+	}
+
+	const createDbChoice = await vscode.window.showWarningMessage(
+		'No main.db found in workspace root. Create one from the bundled empty database?',
+		{ modal: true },
+		'Create main.db',
+		'Cancel'
+	);
+
+	if (createDbChoice !== 'Create main.db') {
+		vscode.window.showInformationMessage('Web server launch canceled: main.db is required.');
+		return false;
+	}
+
+	const templateDbPath = resolveEmptyDbTemplatePath(workspaceRoot);
+	if (!templateDbPath) {
+		vscode.window.showErrorMessage('Unable to find main-empty.db template in extension package.');
+		return false;
+	}
+
+	try {
+		fs.copyFileSync(templateDbPath, dbPath);
+		vscode.window.showInformationMessage('Created main.db from template.');
+		return true;
+	} catch (error) {
+		console.error('Failed to create main.db from template:', error);
+		vscode.window.showErrorMessage('Failed to create main.db from template.');
+		return false;
+	}
+}
+
 async function checkPythonEnvironment(): Promise<boolean> {
 	try {
 		const pythonExtension = vscode.extensions.getExtension('ms-python.python');
@@ -67,13 +117,13 @@ async function startWebServer(pythonPath: string, workspaceRoot: string): Promis
 			webServerProcess = null;
 		}
 
-		// Check if main.db exists
-		const dbPath = path.join(workspaceRoot, 'main.db');
-		if (!fs.existsSync(dbPath)) {
-			vscode.window.showErrorMessage('No main.db found in workspace root');
-			console.log('No main.db found in workspace root');
+		const hasDb = await ensureMainDbExists(workspaceRoot);
+		if (!hasDb) {
+			console.log('Web server startup skipped because main.db is missing');
 			return;
 		}
+
+		const dbPath = path.join(workspaceRoot, 'main.db');
 
 		// Start the web server in the background
 		// spacetimepy.interface.web.explorer main.db --mode api
