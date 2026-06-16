@@ -14,12 +14,27 @@
     "url": "git://github.com/jbdoderlein/pymonitor-vscode.git"
   },
   "activationEvents": [
+    "onCommand:pymonitor.variateSelection",
+    "onCommand:pymonitor.showVariantChange",
+    "onCommand:pymonitor.clearVariant",
     "onLanguage:python",
     "workspaceContains:main.db"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "pymonitor.variateSelection",
+        "title": "Variate"
+      },
+      {
+        "command": "pymonitor.showVariantChange",
+        "title": "Variate: Show Next Change"
+      },
+      {
+        "command": "pymonitor.clearVariant",
+        "title": "Variate: Clear Variant"
+      },
       {
         "command": "pymonitor.checkPython",
         "title": "PyMonitor: Check Python Environment"
@@ -73,6 +88,23 @@
       "language": "python"
     },
     "menus": {
+      "editor/context": [
+        {
+          "command": "pymonitor.variateSelection",
+          "when": "resourceScheme == file",
+          "group": "navigation@1"
+        },
+        {
+          "command": "pymonitor.clearVariant",
+          "when": "spacetimeVariant.active && resourceScheme == file",
+          "group": "navigation@3"
+        },
+        {
+          "command": "pymonitor.showVariantChange",
+          "when": "spacetimeVariant.active && resourceScheme == file",
+          "group": "navigation@2"
+        }
+      ],
       "debug/toolBar": [
         {
           "command": "pymonitor.hotswapLine",
@@ -151,6 +183,7 @@
     "ms-python.python"
   ],
   "dependencies": {
+    "livex": "github:jbdoderlein/LivEx",
     "tree-sitter": "^0.22.4",
     "tree-sitter-python": "^0.23.6"
   }

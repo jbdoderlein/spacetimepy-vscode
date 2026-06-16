@@ -16,6 +16,7 @@ import { DebuggerService } from './services/debugger';
 import { GraphWebviewProvider } from './providers/graphWebviewProvider';
 import { updateGraphData } from './services/graph';
 import { NodeDependenciesProvider, LineInfo } from './providers/testProvider';
+import { VariantQuickDiffService } from './services/variantQuickDiff';
 
 const execAsync = promisify(exec);
 const config = ConfigService.getInstance();
@@ -187,6 +188,16 @@ export async function activate(context: vscode.ExtensionContext) {
 	//context.subscriptions.push(debugTrackerFactory);
 
 	// Register commands
+	const variantQuickDiffService = new VariantQuickDiffService();
+	const variateSelectionCommand = vscode.commands.registerCommand('pymonitor.variateSelection', async () => {
+		await variantQuickDiffService.startVariantFromEditor();
+	});
+	const showVariantChangeCommand = vscode.commands.registerCommand('pymonitor.showVariantChange', async () => {
+		await variantQuickDiffService.showNextVariantChange();
+	});
+	const clearVariantCommand = vscode.commands.registerCommand('pymonitor.clearVariant', async () => {
+		await variantQuickDiffService.clearActiveVariant();
+	});
 	const checkCommand = vscode.commands.registerCommand('pymonitor.checkPython', checkPythonEnvironment);
 	const restartCommand = vscode.commands.registerCommand('pymonitor.restartServer', async () => {
 		console.log('Restart server command triggered');
@@ -763,7 +774,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		codeLensProvider.refresh();
 	}
 
-	context.subscriptions.push(checkCommand, restartCommand, showFunctionDetailsCommand, documentListener, statusBarItem);
+	context.subscriptions.push(variantQuickDiffService, variateSelectionCommand, showVariantChangeCommand, clearVariantCommand, checkCommand, restartCommand, showFunctionDetailsCommand, documentListener, statusBarItem);
 
 	// Initialize the graph example (this registers the graph webview provider)
 	// new GraphExample(context);
