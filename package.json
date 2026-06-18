@@ -17,6 +17,7 @@
     "onCommand:pymonitor.variateSelection",
     "onCommand:pymonitor.showVariantChange",
     "onCommand:pymonitor.clearVariant",
+    "onCommand:pymonitor.analyzeLivExProbes",
     "onLanguage:python",
     "workspaceContains:main.db"
   ],
@@ -34,6 +35,10 @@
       {
         "command": "pymonitor.clearVariant",
         "title": "Variate: Clear Variant"
+      },
+      {
+        "command": "pymonitor.analyzeLivExProbes",
+        "title": "PyMonitor: Analyze LivEx Probes"
       },
       {
         "command": "pymonitor.checkPython",
@@ -103,6 +108,11 @@
           "command": "pymonitor.showVariantChange",
           "when": "spacetimeVariant.active && resourceScheme == file",
           "group": "navigation@2"
+        },
+        {
+          "command": "pymonitor.analyzeLivExProbes",
+          "when": "resourceScheme == file && editorLangId == python",
+          "group": "navigation@4"
         }
       ],
       "debug/toolBar": [
@@ -168,7 +178,7 @@
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
-    "@types/node": "20.x",
+    "@types/node": "^20.19.43",
     "@types/vscode": "^1.98.0",
     "@typescript-eslint/eslint-plugin": "^8.28.0",
     "@typescript-eslint/parser": "^8.28.0",

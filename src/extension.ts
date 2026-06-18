@@ -17,6 +17,7 @@ import { GraphWebviewProvider } from './providers/graphWebviewProvider';
 import { updateGraphData } from './services/graph';
 import { NodeDependenciesProvider, LineInfo } from './providers/testProvider';
 import { VariantQuickDiffService } from './services/variantQuickDiff';
+import { LivExProbeService } from './services/livexProbeService';
 
 const execAsync = promisify(exec);
 const config = ConfigService.getInstance();
@@ -175,6 +176,8 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Create status bar item
 	statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
 	statusBarItem.command = 'pymonitor.restartServer';
+	const livexProbeService = new LivExProbeService();
+	context.subscriptions.push(livexProbeService);
 
 	// Add Debug Adapter Tracker to log DAP communication and handle stepping
 	vscode.debug.registerDebugAdapterTrackerFactory('*', {
@@ -771,10 +774,21 @@ export async function activate(context: vscode.ExtensionContext) {
 				state.functionDataCache.set(doc.fileName, functionData);
 			}
 		}
+		livexProbeService.analyzeOpenPythonDocuments();
 		codeLensProvider.refresh();
 	}
 
-	context.subscriptions.push(variantQuickDiffService, variateSelectionCommand, showVariantChangeCommand, clearVariantCommand, checkCommand, restartCommand, showFunctionDetailsCommand, documentListener, statusBarItem);
+	context.subscriptions.push(
+		variantQuickDiffService,
+		variateSelectionCommand,
+		showVariantChangeCommand,
+		clearVariantCommand,
+		checkCommand,
+		restartCommand,
+		showFunctionDetailsCommand,
+		documentListener,
+		statusBarItem
+	);
 
 	// Initialize the graph example (this registers the graph webview provider)
 	// new GraphExample(context);

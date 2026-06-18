@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { debugLog } from './state';
 import { Tree } from 'tree-sitter';
 import Parser from 'tree-sitter';
 import PythonParser from 'tree-sitter-python';
@@ -17,10 +16,9 @@ export interface FunctionInfo {
 }
 
 /**
- * Parse a Python file and extract function definitions using regex
+ * Parse Python source code and extract function definitions using tree-sitter.
  */
-export function parsePythonFile(document: vscode.TextDocument): FunctionInfo[] {
-    const sourceCode = document.getText();
+export function parsePythonSource(sourceCode: string): FunctionInfo[] {
     const functions: FunctionInfo[] = [];
     const tree : Tree = parser.parse(sourceCode);
     const root = tree.rootNode;
@@ -40,8 +38,8 @@ export function parsePythonFile(document: vscode.TextDocument): FunctionInfo[] {
         }
 
         const functionRange = new vscode.Range(
-            document.positionAt(node.startIndex),
-            document.positionAt(node.endIndex)
+            new vscode.Position(node.startPosition.row, node.startPosition.column),
+            new vscode.Position(node.endPosition.row, node.endPosition.column)
         );
 
         const functionInfo: FunctionInfo = {
@@ -53,4 +51,11 @@ export function parsePythonFile(document: vscode.TextDocument): FunctionInfo[] {
         functions.push(functionInfo);
     }
     return functions;
-} 
+}
+
+/**
+ * Parse a Python file and extract function definitions using tree-sitter.
+ */
+export function parsePythonFile(document: vscode.TextDocument): FunctionInfo[] {
+    return parsePythonSource(document.getText());
+}

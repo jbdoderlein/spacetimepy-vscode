@@ -3,7 +3,7 @@ import { FunctionInfo } from './treeSitter';
 import { debugLog } from './state';
 import { getFunctionData, getSessionsList, getSessionDetails, getFunctionTraces, refreshApiData } from './api';
 import { showFunctionDetails, exploreStackTrace } from './webview';
-import { threadId } from 'worker_threads';
+
 
 /**
  * DebugConfiguration for a Python function

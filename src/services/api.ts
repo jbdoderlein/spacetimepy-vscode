@@ -40,9 +40,22 @@ export async function waitForServer(): Promise<boolean> {
     return false;
 }
 
-export async function getFunctionData(filePath: string): Promise<FunctionData[] | null> {
+export async function isServerReady(): Promise<boolean> {
     try {
-        const response = await fetch(`${config.getApiUrl()}/api/function-calls?file=${encodeURIComponent(filePath)}`);
+        const response = await fetch(`${config.getApiUrl()}/api/db-info`);
+        return response.ok;
+    } catch (error) {
+        return false;
+    }
+}
+
+export async function getFunctionData(filePath: string, functionName?: string): Promise<FunctionData[] | null> {
+    try {
+        const params = new URLSearchParams({ file: filePath });
+        if (functionName) {
+            params.set('function', functionName);
+        }
+        const response = await fetch(`${config.getApiUrl()}/api/function-calls?${params.toString()}`);
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
