@@ -186,6 +186,94 @@ export class DebuggerService {
         }
     }
 
+
+    /**
+     * Start a debug session for a specific function
+     */
+    public async debugFunctionProgrammatically(
+        uri: vscode.Uri,
+        functionInfo: { name: string, params: string[] },
+        paramValues: Map<string, string>,
+        useReanimation: boolean = false,
+        selectedFunctionCallId: string | number | null = null
+    ): Promise<boolean> {
+        try {
+            // Reset selected call ID
+            this.selectedFunctionCallId = selectedFunctionCallId;
+
+            debugLog(`Starting debug session for function: ${functionInfo.name} in ${uri.fsPath}`);
+
+            // Generate a unique session ID for this debug session
+            const debugSessionId = `debug_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            this.currentDebugSessionId = debugSessionId;
+            this.currentDebugFunctionInfo = { uri, functionName: functionInfo.name };
+
+            debugLog(`Generated debug session ID: ${debugSessionId}`);
+
+            // Get Python extension
+            const pythonExtension = vscode.extensions.getExtension('ms-python.python');
+            if (!pythonExtension) {
+                vscode.window.showErrorMessage('Python extension not found! Please install it first.');
+                return false;
+            }
+
+            // Get Python execution details
+            const executionDetails = await pythonExtension.exports.settings.getExecutionDetails();
+            const pythonPath = executionDetails.execCommand[0];
+            if (!pythonPath) {
+                vscode.window.showErrorMessage('No Python executable found');
+                return false;
+            }
+
+            // Create debug configuration
+            const debugConfig: PyMonitorDebugConfig = {
+                name: `Debug ${functionInfo.name}`,
+                type: 'python',
+                request: 'launch',
+                program: uri.fsPath,
+                pythonPath: pythonPath,
+                args: [debugSessionId], // Pass the unique session ID
+                console: 'integratedTerminal',
+                stopOnEntry: true, // Stop at the first line of the function
+                // Add an environment variable to indicate we want to debug a specific function
+                env: {
+                    'PYMONITOR_DEBUG_FUNCTION': functionInfo.name,
+                    'PYMONITOR_DEBUG_MODE': 'true',
+                    'PYMONITOR_SESSION_ID': debugSessionId
+                }
+            };
+            const fInfo = { ...functionInfo, range: new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0)) }; // Dummy range for programmatic call
+            // Create a wrapper file that will call the function with selected args
+            const wrapperFile = await this.createWrapperFile(uri.fsPath, fInfo, paramValues, useReanimation, debugSessionId);
+            if (wrapperFile) {
+                debugConfig.program = wrapperFile.fsPath;
+                debugConfig.stopOnEntry = false; // We want to stop on the function entry, not the wrapper
+            }
+
+            // Start debugging
+            const debugStarted = await vscode.debug.startDebugging(undefined, debugConfig);
+            debugLog(`Debug session started: ${debugStarted}`);
+
+            if (debugStarted) {
+                debugLog(`Setting up monitoring for debug session: ${debugSessionId}`);
+                // After a short delay, start monitoring for the function execution
+                setTimeout(() => {
+                    debugLog(`Starting monitoring for debug session: ${debugSessionId}`);
+                    this.monitorForDebugExecution(debugSessionId, uri, functionInfo.name);
+                }, 2000); // Wait 2 seconds for the debug session to initialize
+            } else {
+                debugLog(`Failed to start debug session`);
+            }
+
+            return debugStarted;
+        } catch (error) {
+            debugLog('Error starting debug session:', error);
+            vscode.window.showErrorMessage(`Failed to start debug session: ${error}`);
+            return false;
+        }
+    }
+
+
     /**
      * Ensure a breakpoint exists at the start of the function
      */

@@ -183,7 +183,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	vscode.debug.registerDebugAdapterTrackerFactory('*', {
 		createDebugAdapterTracker(session: vscode.DebugSession) {
 			return {
-				onWillReceiveMessage: async m => { if (m["command"] === "stackTrace"){await updateStackRecordingIfDebugging(); }},
+				onWillReceiveMessage: async m => { if (m["command"] === "stackTrace") { await updateStackRecordingIfDebugging(); } },
 				//onDidSendMessage: m => console.log(`< ${JSON.stringify(m, undefined, 2)}`)
 			};
 		}
@@ -248,6 +248,13 @@ export async function activate(context: vscode.ExtensionContext) {
 		await debugService.debugFunction(uri, functionInfo);
 	});
 
+
+	// Debug function programmatically command with parameters and optional reanimation 
+	const debugFunctionProgrammaticallyCommand = vscode.commands.registerCommand('pymonitor.debugFunctionProgrammatically', async (uri: vscode.Uri, functionInfo: any, paramValues: Map<string, string>, useReanimation: boolean = false, selectedFunctionCallId: string | number | null = null) => {
+		const debugService = DebuggerService.getInstance();
+		return await debugService.debugFunctionProgrammatically(uri, functionInfo, paramValues, useReanimation, selectedFunctionCallId);
+	});
+
 	// Register the step over (next) command
 	const stepOverCommand = vscode.commands.registerCommand('pymonitor.stepOver', async () => {
 		const debugService = DebuggerService.getInstance();
@@ -259,6 +266,13 @@ export async function activate(context: vscode.ExtensionContext) {
 		const debugService = DebuggerService.getInstance();
 		await debugService.hotswapLine();
 	});
+
+	// Register the step over (next) command
+	const hotswapSpecificLineCommand = vscode.commands.registerCommand('pymonitor.hotswapSpecificLine', async (targetLine: number) => {
+		const debugService = DebuggerService.getInstance();
+		await debugService.hotswapSpecificLine(targetLine);
+	});
+
 
 	// Register the evaluate command
 	const evaluateCommand = vscode.commands.registerCommand('pymonitor.evaluate', async () => {
@@ -393,6 +407,8 @@ export async function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(debugFunctionCommand);
+	context.subscriptions.push(debugFunctionProgrammaticallyCommand);
+	context.subscriptions.push(hotswapSpecificLineCommand);
 	context.subscriptions.push(stepOverCommand);
 	context.subscriptions.push(evaluateCommand);
 	context.subscriptions.push(goToSnapshotStateCommand);
@@ -509,7 +525,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		// Get the current file
 		const editor = vscode.window.activeTextEditor;
-		if (!editor) {return;}
+		if (!editor) { return; }
 
 		const filePath = editor.document.fileName;
 		console.log(`Looking for function data for ${filePath}`);
@@ -802,14 +818,14 @@ export async function activate(context: vscode.ExtensionContext) {
 	);
 	state.graphWebviewProvider = graphProvider; // Store reference in state
 	const rootPath =
-    vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
-      ? vscode.workspace.workspaceFolders[0].uri.fsPath
-      : "undefined";
-  	const nodeDependenciesProvider = new NodeDependenciesProvider(rootPath);
-  	vscode.window.registerTreeDataProvider('omniscientDebugPanel', nodeDependenciesProvider);
-  	vscode.commands.registerCommand('omniscientDebugPanel.refreshEntry', () =>
-    	nodeDependenciesProvider.refresh()
-  	);
+		vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
+			? vscode.workspace.workspaceFolders[0].uri.fsPath
+			: "undefined";
+	const nodeDependenciesProvider = new NodeDependenciesProvider(rootPath);
+	vscode.window.registerTreeDataProvider('omniscientDebugPanel', nodeDependenciesProvider);
+	vscode.commands.registerCommand('omniscientDebugPanel.refreshEntry', () =>
+		nodeDependenciesProvider.refresh()
+	);
 
 	vscode.commands.registerCommand('omniscientDebugPanel.gotoLine', (item: LineInfo) => {
 		vscode.window.showInformationMessage(`Going to line: ${item}`);

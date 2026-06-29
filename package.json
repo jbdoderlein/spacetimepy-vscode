@@ -57,6 +57,14 @@
         "title": "Debug Python Function"
       },
       {
+        "command": "pymonitor.debugFunctionProgrammatically",
+        "title": "Debug Python Function Programmatically"
+      },
+      {
+        "command": "pymonitor.hotswapSpecificLine",
+        "title": "PyMonitor: Hot Swap Specific Line"
+      },
+      {
         "command": "pymonitor.hotswapLine",
         "title": "PyMonitor: Hot Swap Line",
         "icon": {
