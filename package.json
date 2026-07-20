@@ -1,0 +1,100 @@
+{
+  "name": "spacetimepy-vscode",
+  "displayName": "SpaceTimePy",
+  "description": "Explore SpaceTimePy recordings and replay branches in VS Code",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:python",
+    "workspaceContains:trace.db",
+    "workspaceContains:.vscode/spacetimepy.db",
+    "onCommand:spacetimepy.restartServer",
+    "onCommand:spacetimepy.refreshTraces"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "spacetimepy.restartServer",
+        "title": "SpaceTimePy: Restart Trace Server",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "spacetimepy.refreshTraces",
+        "title": "SpaceTimePy: Refresh Recorded Executions",
+        "icon": "$(refresh)"
+      }
+    ],
+    "configuration": {
+      "title": "SpaceTimePy",
+      "properties": {
+        "spacetimepy.server.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the local SpaceTimePy JSON API for the automatically selected project trace database."
+        },
+        "spacetimepy.server.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host used by the local SpaceTimePy JSON API."
+        },
+        "spacetimepy.server.port": {
+          "type": "integer",
+          "default": 8000,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port used by the local SpaceTimePy JSON API."
+        },
+        "spacetimepy.apiUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional URL of an existing SpaceTimePy JSON API. When set, the extension does not start a local server."
+        },
+        "spacetimepy.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Python executable used to start SpaceTimePy. The selected Python extension interpreter is used when empty."
+        },
+        "spacetimepy.requestTimeout": {
+          "type": "integer",
+          "default": 10000,
+          "minimum": 500,
+          "description": "Timeout in milliseconds for SpaceTimePy API requests."
+        },
+        "spacetimepy.codeLens.refreshInterval": {
+          "type": "integer",
+          "default": 5000,
+          "minimum": 1000,
+          "description": "Interval in milliseconds between recorded-execution CodeLens refreshes."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "extensionDependencies": [
+    "ms-python.python"
+  ],
+  "devDependencies": {
+    "@types/vscode": "^1.125.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@typescript-eslint/eslint-plugin": "^8.45.0",
+    "@typescript-eslint/parser": "^8.45.0",
+    "eslint": "^9.36.0",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
