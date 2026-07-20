@@ -2,6 +2,10 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { SpaceTimePyApiClient } from './api';
 import { getConfig } from './config';
+import { DebuggerHotswapService } from './debuggerHotswap';
+import { FunctionCaptureService, SnapshotReplayRequest } from './functionCapture';
+import { FunctionLaunchCodeLensProvider } from './functionLaunchCodeLens';
+import { PythonFunction } from './pythonFunctions';
 import { RecordedExecutionCodeLensProvider } from './recordedExecutionCodeLens';
 import { ServerManager, ServerStatus } from './serverManager';
 import { TraceExplorerPanel } from './traceExplorerPanel';
@@ -59,6 +63,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		output,
 		getConfig().codeLensRefreshInterval,
 	);
+	const functionCapture = new FunctionCaptureService(context, api, server, output);
+	const functionLaunchCodeLensProvider = new FunctionLaunchCodeLensProvider();
+	const debuggerHotswap = new DebuggerHotswapService(output);
 	const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
 	statusBar.command = 'spacetimepy.restartServer';
 	updateStatusBar(statusBar, server.getStatus());
@@ -67,7 +74,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		output,
 		server,
 		codeLensProvider,
+		functionCapture,
+		debuggerHotswap,
 		statusBar,
+		debuggerHotswap.onDidSynchronizeTrace(session => {
+			void functionCapture.synchronizeDebugSession(session);
+		}),
 		server.onDidChangeStatus(status => {
 			updateStatusBar(statusBar, status);
 			if (status.state === 'ready') {
@@ -77,6 +89,52 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		vscode.languages.registerCodeLensProvider(
 			{ scheme: 'file', language: 'python' },
 			codeLensProvider,
+		),
+		vscode.languages.registerCodeLensProvider(
+			{ scheme: 'file', language: 'python' },
+			functionLaunchCodeLensProvider,
+		),
+		vscode.commands.registerCommand(
+			'spacetimepy.debugFunction',
+			async (uri?: vscode.Uri, functionInfo?: PythonFunction) => {
+				if (!uri || !functionInfo) {
+					void vscode.window.showInformationMessage(
+						'Use the “Debug with SpaceTimePy” CodeLens above a top-level Python function.',
+					);
+					return;
+				}
+				try {
+					await functionCapture.debugFunction(uri, functionInfo);
+				} catch (error) {
+					const detail = error instanceof Error ? error.message : String(error);
+					output.appendLine(`Function launch failed: ${detail}`);
+					void vscode.window.showErrorMessage(`Unable to debug with SpaceTimePy: ${detail}`);
+				}
+			},
+		),
+		vscode.commands.registerCommand('spacetimepy.hotswapCurrentFrame', async () => {
+			try {
+				await debuggerHotswap.hotswapCurrentFrame();
+			} catch (error) {
+				const detail = error instanceof Error ? error.message : String(error);
+				output.appendLine(`Live hotswap failed: ${detail}`);
+				void vscode.window.showErrorMessage(`SpaceTimePy hotswap failed: ${detail}`);
+			}
+		}),
+		vscode.commands.registerCommand(
+			'spacetimepy.replaySnapshot',
+			async (request?: SnapshotReplayRequest) => {
+				if (!request) {
+					return;
+				}
+				try {
+					await functionCapture.replaySnapshot(request);
+				} catch (error) {
+					const detail = error instanceof Error ? error.message : String(error);
+					output.appendLine(`Snapshot replay failed: ${detail}`);
+					void vscode.window.showErrorMessage(`Unable to replay this snapshot: ${detail}`);
+				}
+			},
 		),
 		vscode.commands.registerCommand('spacetimepy.restartServer', async () => {
 			try {

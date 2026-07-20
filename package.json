@@ -14,7 +14,9 @@
     "workspaceContains:trace.db",
     "workspaceContains:.vscode/spacetimepy.db",
     "onCommand:spacetimepy.restartServer",
-    "onCommand:spacetimepy.refreshTraces"
+    "onCommand:spacetimepy.refreshTraces",
+    "onCommand:spacetimepy.debugFunction",
+    "onCommand:spacetimepy.hotswapCurrentFrame"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -28,8 +30,27 @@
         "command": "spacetimepy.refreshTraces",
         "title": "SpaceTimePy: Refresh Recorded Executions",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "spacetimepy.debugFunction",
+        "title": "SpaceTimePy: Debug Function",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "spacetimepy.hotswapCurrentFrame",
+        "title": "SpaceTimePy: Hotswap Current Frame",
+        "icon": "$(zap)"
       }
     ],
+    "menus": {
+      "debug/toolBar": [
+        {
+          "command": "spacetimepy.hotswapCurrentFrame",
+          "when": "debugType == debugpy",
+          "group": "navigation@9"
+        }
+      ]
+    },
     "configuration": {
       "title": "SpaceTimePy",
       "properties": {

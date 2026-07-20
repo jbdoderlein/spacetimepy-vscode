@@ -14,6 +14,11 @@ export interface ServerStatus {
 	managed: boolean;
 }
 
+export interface CaptureRuntime {
+	pythonPath: string;
+	databasePath: string;
+}
+
 interface PythonEnvironmentPath {
 	path?: string;
 	uri?: vscode.Uri;
@@ -30,6 +35,7 @@ interface PythonExtensionExports {
 
 export class ServerManager implements vscode.Disposable {
 	private process: ChildProcess | null = null;
+	private startPromise: Promise<void> | null = null;
 	private status: ServerStatus = {
 		state: 'idle',
 		message: 'SpaceTimePy trace server is stopped',
@@ -65,6 +71,38 @@ export class ServerManager implements vscode.Disposable {
 	}
 
 	public async start(): Promise<void> {
+		if (!this.startPromise) {
+			this.startPromise = this.startOnce().finally(() => {
+				this.startPromise = null;
+			});
+		}
+		await this.startPromise;
+	}
+
+	public async prepareCapture(resource: vscode.Uri): Promise<CaptureRuntime> {
+		const config = getConfig();
+		if (config.usesExternalApi) {
+			throw new Error(
+				'Function capture needs the project database, but spacetimepy.apiUrl points to an external server.',
+			);
+		}
+		if (!config.databasePath) {
+			throw new Error('Open a workspace folder before launching a SpaceTimePy function capture.');
+		}
+
+		const pythonPath = await this.resolvePythonPath(resource);
+		await this.verifySpaceTimePy(pythonPath);
+		await initializeTraceDatabase(pythonPath, config.databasePath);
+		await this.startIfConfigured();
+		if (!await this.isApiReady()) {
+			throw new Error(
+				`The SpaceTimePy API at ${config.apiUrl} must be running so the new recording can be opened.`,
+			);
+		}
+		return { pythonPath, databasePath: config.databasePath };
+	}
+
+	private async startOnce(): Promise<void> {
 		const config = getConfig();
 		if (!config.autoStartServer) {
 			await this.connectToExistingServer(true);
@@ -256,7 +294,7 @@ export class ServerManager implements vscode.Disposable {
 		}
 	}
 
-	private async resolvePythonPath(): Promise<string> {
+	private async resolvePythonPath(resource?: vscode.Uri): Promise<string> {
 		const configured = getConfig().pythonPath;
 		if (configured) {
 			return configured;
@@ -265,13 +303,13 @@ export class ServerManager implements vscode.Disposable {
 		const extension = vscode.extensions.getExtension<PythonExtensionExports>('ms-python.python');
 		if (extension) {
 			const exports = extension.isActive ? extension.exports : await extension.activate();
-			const resource = vscode.workspace.workspaceFolders?.[0]?.uri;
-			const environment = exports.environments?.getActiveEnvironmentPath(resource);
+			const selectedResource = resource ?? vscode.workspace.workspaceFolders?.[0]?.uri;
+			const environment = exports.environments?.getActiveEnvironmentPath(selectedResource);
 			const activePath = environment?.path ?? environment?.uri?.fsPath;
 			if (activePath) {
 				return activePath;
 			}
-			const executionDetails = exports.settings?.getExecutionDetails(resource);
+			const executionDetails = exports.settings?.getExecutionDetails(selectedResource);
 			if (executionDetails?.execCommand?.[0]) {
 				return executionDetails.execCommand[0];
 			}

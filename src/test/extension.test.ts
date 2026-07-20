@@ -10,6 +10,7 @@ import {
 import {
 	callsForFunction,
 	findPythonFunctions,
+	isLaunchablePythonFunction,
 	recordedCallsForFunction,
 	recordedFileMatches,
 } from '../pythonFunctions';
@@ -58,6 +59,23 @@ suite('Python function trace binding', () => {
 			functions.map(item => [item.qualifiedName, item.line]),
 			[['top_level', 0], ['Worker.run', 4], ['Worker.run.nested', 5]],
 		);
+		assert.deepStrictEqual(functions.map(item => item.bodyLine), [1, 5, 6]);
+		assert.deepStrictEqual(functions.map(isLaunchablePythonFunction), [true, false, false]);
+	});
+
+	test('finds executable bodies after multiline signatures', () => {
+		const functions = findPythonFunctions([
+			'def calculate(',
+			'    left: int,',
+			'    right: int,',
+			') -> int:',
+			'    # Break on executable code, not the signature or comment.',
+			'    return left + right',
+			'',
+			'def compact(): return 1',
+		].join('\n'));
+
+		assert.deepStrictEqual(functions.map(item => item.bodyLine), [5, 7]);
 	});
 
 	test('binds moved functions by qualified name instead of recorded line', () => {

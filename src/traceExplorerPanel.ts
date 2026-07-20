@@ -35,9 +35,11 @@ interface WebviewMessage {
 	snapshotId?: unknown;
 	functionCallId?: unknown;
 	line?: unknown;
+	stepId?: unknown;
 }
 
 export class TraceExplorerPanel {
+	private static readonly panels = new Map<number, TraceExplorerPanel>();
 	private readonly disposables: vscode.Disposable[] = [];
 	private state: TraceExplorerState | null = null;
 	private readonly recordingCache = new Map<number, Promise<StackRecording>>();
@@ -69,20 +71,35 @@ export class TraceExplorerPanel {
 		api: SpaceTimePyApiClient,
 		callId: number,
 		output: vscode.OutputChannel,
-	): Promise<void> {
+	): Promise<TraceExplorerPanel> {
+		const existing = TraceExplorerPanel.panels.get(callId);
+		if (existing) {
+			existing.panel.reveal(vscode.ViewColumn.One, true);
+			await existing.refresh();
+			return existing;
+		}
 		const panel = vscode.window.createWebviewPanel(
 			'spacetimepy.traceExplorer',
 			'SpaceTimePy Trace',
-			vscode.ViewColumn.One,
+			{ viewColumn: vscode.ViewColumn.One, preserveFocus: true },
 			{ enableScripts: true, retainContextWhenHidden: true },
 		);
 		const explorer = new TraceExplorerPanel(panel, api, callId, output);
+		TraceExplorerPanel.panels.set(callId, explorer);
 		try {
 			await explorer.load();
+			return explorer;
 		} catch (error) {
+			TraceExplorerPanel.panels.delete(callId);
 			panel.dispose();
 			throw error;
 		}
+	}
+
+	public async refresh(): Promise<void> {
+		await this.api.refresh();
+		this.recordingCache.clear();
+		await this.load();
 	}
 
 	private async load(): Promise<void> {
@@ -90,7 +107,7 @@ export class TraceExplorerPanel {
 			this.api.getFunctionCall(this.callId),
 			this.getRecording(this.callId),
 		]);
-		const location = call.locations[0] ?? null;
+		const location = call.locations[call.locations.length - 1] ?? null;
 		let session: SessionDetail | null = null;
 		let branch: BranchDetail | null = null;
 		if (location) {
@@ -153,6 +170,20 @@ export class TraceExplorerPanel {
 							message.line,
 							typeof message.functionCallId === 'number' ? message.functionCallId : undefined,
 						);
+					}
+					break;
+				case 'replaySnapshot':
+					if (
+						typeof message.stepId === 'number'
+						&& typeof message.functionCallId === 'number'
+						&& this.state?.selectedBranchId !== null
+						&& this.state?.selectedBranchId !== undefined
+					) {
+						await vscode.commands.executeCommand('spacetimepy.replaySnapshot', {
+							branchId: this.state.selectedBranchId,
+							stepId: message.stepId,
+							functionCallId: message.functionCallId,
+						});
 					}
 					break;
 			}
@@ -260,6 +291,9 @@ export class TraceExplorerPanel {
 	}
 
 	private dispose(): void {
+		if (TraceExplorerPanel.panels.get(this.callId) === this) {
+			TraceExplorerPanel.panels.delete(this.callId);
+		}
 		this.highlightGeneration += 1;
 		if (this.highlightedEditor) {
 			this.highlightedEditor.setDecorations(this.lineDecoration, []);
@@ -340,6 +374,7 @@ export class TraceExplorerPanel {
 	<header class="header">
 		<div><h1 id="title"></h1><div id="meta" class="meta"></div></div>
 		<button id="reload" title="Refresh the database and reload this trace">Reload</button>
+		<button id="replay" title="Restart current code from the selected recorded state">Restart from snapshot</button>
 	</header>
 	<div class="layout">
 		<aside class="execution">
@@ -360,7 +395,7 @@ export class TraceExplorerPanel {
 	<script nonce="${nonce}">
 		const vscode = acquireVsCodeApi();
 		const state = ${serialized};
-		const elements = Object.fromEntries(['title','meta','branches','branch-empty','error','path-title','position','timeline','local-timeline','local-position','locals','globals','outcome','previous','next','reload'].map(function(id) { return [id, document.getElementById(id)]; }));
+		const elements = Object.fromEntries(['title','meta','branches','branch-empty','error','path-title','position','timeline','local-timeline','local-position','locals','globals','outcome','previous','next','reload','replay'].map(function(id) { return [id, document.getElementById(id)]; }));
 		const loadedSnapshots = new Map();
 		let frames = [];
 		let currentIndex = 0;
@@ -433,6 +468,7 @@ export class TraceExplorerPanel {
 
 		function renderTimeline() {
 			const available = frames.length > 0;
+			elements.replay.disabled = !available;
 			elements.timeline.max = String(Math.max(0, frames.length - 1));
 			elements.timeline.disabled = !available;
 			elements.previous.disabled = !available || currentIndex === 0;
@@ -548,6 +584,10 @@ export class TraceExplorerPanel {
 		elements.previous.onclick = function() { selectFrame(currentIndex - 1); };
 		elements.next.onclick = function() { selectFrame(currentIndex + 1); };
 		elements.reload.onclick = function() { elements.reload.disabled = true; vscode.postMessage({ type: 'reload' }); };
+		elements.replay.onclick = function() {
+			const frame = frames[currentIndex];
+			if (frame) { vscode.postMessage({ type: 'replaySnapshot', stepId: frame.stepId, functionCallId: frame.functionCallId }); }
+		};
 		window.addEventListener('message', function(event) {
 			const message = event.data;
 			if (message.type === 'selectFrame' && typeof message.index === 'number') {

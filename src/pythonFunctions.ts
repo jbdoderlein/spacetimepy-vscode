@@ -6,6 +6,7 @@ export interface PythonFunction {
 	qualifiedName: string;
 	line: number;
 	character: number;
+	bodyLine: number;
 }
 
 interface Scope {
@@ -17,6 +18,65 @@ const definitionPattern = /^(\s*)(?:(async)\s+)?(class|def)\s+([A-Za-z_]\w*)\b/;
 
 function indentation(value: string): number {
 	return value.replace(/\t/g, ' '.repeat(8)).length;
+}
+
+function functionBodyLine(lines: string[], definitionLine: number, definitionIndent: number): number {
+	let headerEnd = definitionLine;
+	let bracketDepth = 0;
+	let quote: string | null = null;
+	let escaped = false;
+
+	for (let line = definitionLine; line < lines.length; line += 1) {
+		const text = lines[line];
+		for (let character = 0; character < text.length; character += 1) {
+			const token = text[character];
+			if (escaped) {
+				escaped = false;
+				continue;
+			}
+			if (quote) {
+				if (token === '\\') {
+					escaped = true;
+				} else if (token === quote) {
+					quote = null;
+				}
+				continue;
+			}
+			if (token === '"' || token === "'") {
+				quote = token;
+				continue;
+			}
+			if (token === '#') {
+				break;
+			}
+			if ('([{'.includes(token)) {
+				bracketDepth += 1;
+			} else if (')]}'.includes(token)) {
+				bracketDepth = Math.max(0, bracketDepth - 1);
+			} else if (token === ':' && bracketDepth === 0) {
+				headerEnd = line;
+				const remainder = text.slice(character + 1).trim();
+				if (remainder && !remainder.startsWith('#')) {
+					return line;
+				}
+				line = lines.length;
+				break;
+			}
+		}
+	}
+
+	for (let line = headerEnd + 1; line < lines.length; line += 1) {
+		const text = lines[line];
+		const trimmed = text.trim();
+		if (!trimmed || trimmed.startsWith('#')) {
+			continue;
+		}
+		if (indentation(text.match(/^\s*/)?.[0] ?? '') > definitionIndent) {
+			return line;
+		}
+		break;
+	}
+	return definitionLine;
 }
 
 export function findPythonFunctions(source: string): PythonFunction[] {
@@ -44,12 +104,17 @@ export function findPythonFunctions(source: string): PythonFunction[] {
 				qualifiedName,
 				line,
 				character: match[1].length,
+				bodyLine: functionBodyLine(lines, line, indent),
 			});
 		}
 		scopes.push({ indent, name });
 	}
 
 	return functions;
+}
+
+export function isLaunchablePythonFunction(functionInfo: PythonFunction): boolean {
+	return !functionInfo.qualifiedName.includes('.');
 }
 
 function normalizedQualifiedName(value: string): string {
