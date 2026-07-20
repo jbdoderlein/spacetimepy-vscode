@@ -15,6 +15,11 @@ interface StackFrameResponse {
 	}>;
 }
 
+export interface ActiveCheckpointRequest {
+	branchId: number;
+	stepId: number;
+}
+
 export class DebuggerHotswapService implements vscode.Disposable {
 	private readonly stoppedWaiters = new Map<string, Set<() => void>>();
 	private readonly restoredSnapshotSessions = new Set<string>();
@@ -73,27 +78,45 @@ export class DebuggerHotswapService implements vscode.Disposable {
 		});
 		this.output.appendLine(`Hotswap line mapping: ${prepared?.result ?? '(prepared)'}`);
 
-		const stopped = this.waitForStopped(session.id, 15_000);
-		this.hotswapInProgress.add(session.id);
-		let restored: { result?: string } | undefined;
-		try {
-			await session.customRequest('continue', { threadId });
-			await stopped;
-
-			const replacement = await this.topFrame(session, threadId);
-			restored = await session.customRequest('evaluate', {
-				expression: '_spacetimepy_hotswap_finish()',
-				frameId: replacement.id,
-				threadId,
-				context: 'repl',
-			});
-		} finally {
-			this.hotswapInProgress.delete(session.id);
-		}
+		const restored = await this.completePreparedReplacement(session, threadId);
 		this.output.appendLine(`Replacement state restored: ${restored?.result ?? '(restored)'}`);
-		await this.synchronizeTrace(session, threadId);
 		void vscode.window.showInformationMessage(
 			`SpaceTimePy replaced ${frame.name}; execution now follows the new branch.`,
+		);
+	}
+
+	public isSpaceTimeSession(session: vscode.DebugSession): boolean {
+		return session.type === 'debugpy'
+			&& typeof session.configuration.spacetimepyLaunchId === 'string';
+	}
+
+	public async replayCheckpointInCurrentSession(
+		request: ActiveCheckpointRequest,
+	): Promise<void> {
+		const session = vscode.debug.activeDebugSession;
+		if (!session || !this.isSpaceTimeSession(session)) {
+			throw new Error(
+				'The active debugger was not launched by SpaceTimePy and cannot restore this checkpoint.',
+			);
+		}
+		const threadId = await this.firstThreadId(session);
+		const frame = await this.topFrame(session, threadId);
+		await this.saveSource(frame.source?.path);
+		this.output.appendLine(
+			`Preparing checkpoint step ${request.stepId} in active ${frame.name}`,
+		);
+		const prepared = await session.customRequest('evaluate', {
+			expression: `_spacetimepy_hotswap_prepare_checkpoint(${request.branchId}, ${request.stepId})`,
+			frameId: frame.id,
+			threadId,
+			context: 'repl',
+		});
+		this.output.appendLine(`Checkpoint line mapping: ${prepared?.result ?? '(prepared)'}`);
+
+		const restored = await this.completePreparedReplacement(session, threadId);
+		this.output.appendLine(`Checkpoint state restored: ${restored?.result ?? '(restored)'}`);
+		void vscode.window.showInformationMessage(
+			`SpaceTimePy forked checkpoint step ${request.stepId} in the current debug session.`,
 		);
 	}
 
@@ -154,6 +177,31 @@ export class DebuggerHotswapService implements vscode.Disposable {
 			const detail = error instanceof Error ? error.message : String(error);
 			this.output.appendLine(`Live trace synchronization skipped: ${detail}`);
 		}
+	}
+
+	private async completePreparedReplacement(
+		session: vscode.DebugSession,
+		threadId: number,
+	): Promise<{ result?: string } | undefined> {
+		const stopped = this.waitForStopped(session.id, 15_000);
+		this.hotswapInProgress.add(session.id);
+		let restored: { result?: string } | undefined;
+		try {
+			await session.customRequest('continue', { threadId });
+			await stopped;
+
+			const replacement = await this.topFrame(session, threadId);
+			restored = await session.customRequest('evaluate', {
+				expression: '_spacetimepy_hotswap_finish()',
+				frameId: replacement.id,
+				threadId,
+				context: 'repl',
+			});
+		} finally {
+			this.hotswapInProgress.delete(session.id);
+		}
+		await this.synchronizeTrace(session, threadId);
+		return restored;
 	}
 
 	private async firstThreadId(session: vscode.DebugSession): Promise<number> {

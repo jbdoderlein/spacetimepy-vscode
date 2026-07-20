@@ -128,7 +128,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					return;
 				}
 				try {
-					await functionCapture.replaySnapshot(request);
+					const activeSession = vscode.debug.activeDebugSession;
+					if (activeSession) {
+						if (!debuggerHotswap.isSpaceTimeSession(activeSession)) {
+							throw new Error(
+								'Close the active non-SpaceTimePy debug session before starting checkpoint exploration.',
+							);
+						}
+						await debuggerHotswap.replayCheckpointInCurrentSession(request);
+					} else {
+						await functionCapture.replaySnapshot(request);
+					}
 				} catch (error) {
 					const detail = error instanceof Error ? error.message : String(error);
 					output.appendLine(`Snapshot replay failed: ${detail}`);

@@ -10,6 +10,7 @@ import {
 import {
 	callsForFunction,
 	findPythonFunctions,
+	functionForRecordedCall,
 	isLaunchablePythonFunction,
 	recordedCallsForFunction,
 	recordedFileMatches,
@@ -60,7 +61,27 @@ suite('Python function trace binding', () => {
 			[['top_level', 0], ['Worker.run', 4], ['Worker.run.nested', 5]],
 		);
 		assert.deepStrictEqual(functions.map(item => item.bodyLine), [1, 5, 6]);
+		assert.deepStrictEqual(functions.map(item => item.endLine), [1, 6, 6]);
 		assert.deepStrictEqual(functions.map(isLaunchablePythonFunction), [true, false, false]);
+	});
+
+	test('tracks decorators and complete function source ranges', () => {
+		const functions = findPythonFunctions([
+			'@capture(',
+			'    mode="line",',
+			')',
+			'def calculate(value):',
+			'    changed = value + 1',
+			'    return changed',
+			'',
+			'print(calculate(1))',
+		].join('\n'));
+
+		assert.deepStrictEqual(
+			[functions[0].sourceLine, functions[0].line, functions[0].endLine],
+			[0, 3, 5],
+		);
+		assert.strictEqual(functionForRecordedCall(functions, call(1, 'calculate', 'calculate')), functions[0]);
 	});
 
 	test('finds executable bodies after multiline signatures', () => {
@@ -198,6 +219,7 @@ suite('Trace explorer webview', () => {
 		assert.match(html, /\['Name', 'Value'\]/);
 		assert.match(html, /value-string/);
 		assert.match(html, /type: 'highlightSource'/);
+		assert.match(html, /codeDefinitionId: frame.codeDefinitionId/);
 	});
 
 	test('uses line frames belonging to function-call branch steps', () => {

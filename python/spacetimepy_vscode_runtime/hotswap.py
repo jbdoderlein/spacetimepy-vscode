@@ -26,6 +26,7 @@ from spacetimepy import get_active_spacetime
 _ENTRY_NAME = "_spacetimepy_hotswap_entry"
 _CONTINUE_NAME = "_spacetimepy_hotswap_continue"
 _PREPARE_NAME = "_spacetimepy_hotswap_prepare"
+_CHECKPOINT_NAME = "_spacetimepy_hotswap_prepare_checkpoint"
 _FINISH_NAME = "_spacetimepy_hotswap_finish"
 _TEMPORARY_NAME = "_spacetimepy_hotswap_result"
 _CONTINUE = object()
@@ -55,6 +56,14 @@ class _HotSwapState:
     saved_locals: dict[str, Any] | None = None
     initial_replay_locals: dict[str, Any] | None = None
     replacement_state_recorded: bool = False
+    replacement_locals: dict[str, Any] | None = None
+    replacement_parent_branch_id: int | None = None
+    replacement_forked_step_id: int | None = None
+    replacement_operation: str = "live-hotswap"
+    checkpoint_locals: dict[str, Any] | None = None
+    checkpoint_globals: dict[str, Any] | None = None
+    checkpoint_parent_branch_id: int | None = None
+    checkpoint_forked_step_id: int | None = None
 
 
 def _function_source(file_path: Path, function_name: str) -> _SourceVersion:
@@ -140,22 +149,6 @@ def _reload_module(module: ModuleType, file_path: Path) -> ModuleType:
         return module
 
 
-def _call_arguments(function: FunctionType, frame: FrameType) -> tuple[list[Any], dict[str, Any]]:
-    positional: list[Any] = []
-    keywords: dict[str, Any] = {}
-    for parameter in inspect.signature(function).parameters.values():
-        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
-            positional.extend(frame.f_locals.get(parameter.name, ()))
-        elif parameter.kind is inspect.Parameter.VAR_KEYWORD:
-            keywords.update(frame.f_locals.get(parameter.name, {}))
-        elif parameter.name in frame.f_locals:
-            if parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
-                positional.append(frame.f_locals[parameter.name])
-            else:
-                keywords[parameter.name] = frame.f_locals[parameter.name]
-    return positional, keywords
-
-
 def _restore_locals(frame: FrameType, values: dict[str, Any]) -> None:
     for name, value in values.items():
         if not name.startswith("_spacetimepy_hotswap_") and not name.startswith("__pydevd"):
@@ -167,6 +160,15 @@ def _restore_locals(frame: FrameType, values: dict[str, Any]) -> None:
         locals_to_fast.argtypes = [ctypes.py_object, ctypes.c_int]
         locals_to_fast.restype = None
         locals_to_fast(frame, 0)
+
+
+def _restore_globals(module: ModuleType, values: dict[str, Any]) -> None:
+    for name, value in values.items():
+        if name.startswith("_spacetimepy_") or name == "__builtins__":
+            continue
+        if isinstance(value, ModuleType) or inspect.isroutine(value) or inspect.isclass(value):
+            continue
+        module.__dict__[name] = value
 
 
 def _bind_unbound_locals(frame: FrameType) -> None:
@@ -260,7 +262,11 @@ def hotswappable(function: FunctionType) -> FunctionType:
 
         if state.replacement_source_frame is not None:
             source_frame = state.replacement_source_frame
-            saved_locals = dict(source_frame.f_locals)
+            saved_locals = (
+                dict(source_frame.f_locals)
+                if state.replacement_locals is None
+                else state.replacement_locals
+            )
             _restore_locals(target_frame, saved_locals)
             runtime = get_active_spacetime()
             if runtime is None:
@@ -273,17 +279,29 @@ def hotswappable(function: FunctionType) -> FunctionType:
                 # Keep line events filtered until finish() records migrated
                 # locals as the first replacement step at that destination.
                 replacement_line_numbers=(),
-                name="VS Code live hotswap",
+                parent_branch_id=state.replacement_parent_branch_id,
+                forked_from_step_id=state.replacement_forked_step_id,
+                name=(
+                    "VS Code checkpoint exploration"
+                    if state.replacement_operation == "checkpoint-replay"
+                    else "VS Code live hotswap"
+                ),
                 recipe={
                     "integration": "spacetimepy-vscode",
-                    "operation": "live-hotswap",
+                    "operation": state.replacement_operation,
                     "source_line": state.old_line,
                     "target_line": state.target_line,
+                    **(
+                        {"checkpoint_step_id": state.replacement_forked_step_id}
+                        if state.replacement_forked_step_id is not None
+                        else {}
+                    ),
                 },
             )
             state.replacement_frame = target_frame
             state.saved_locals = saved_locals
             state.replacement_source_frame = None
+            state.replacement_locals = None
             return _CONTINUE
 
         if not state.pending:
@@ -294,16 +312,31 @@ def hotswappable(function: FunctionType) -> FunctionType:
         if module is None:
             raise RuntimeError("Cannot find the module owning the active function")
         replacement_module = _reload_module(module, state.file_path)
+        if state.checkpoint_globals is not None:
+            _restore_globals(replacement_module, state.checkpoint_globals)
         replacement = getattr(replacement_module, state.function_name)
         if not isinstance(replacement, FunctionType):
             raise TypeError(f"Reloaded {state.function_name!r} is not a Python function")
         replacement = hotswappable(replacement)
         replacement_state: _HotSwapState = replacement.__spacetimepy_hotswap_state__
         replacement_state.replacement_source_frame = target_frame
+        replacement_state.replacement_locals = state.checkpoint_locals
+        replacement_state.replacement_parent_branch_id = state.checkpoint_parent_branch_id
+        replacement_state.replacement_forked_step_id = state.checkpoint_forked_step_id
+        replacement_state.replacement_operation = (
+            "checkpoint-replay"
+            if state.checkpoint_forked_step_id is not None
+            else "live-hotswap"
+        )
         replacement_state.old_line = state.old_line
         replacement_state.target_line = state.target_line
         replacement_state.replacement_source = state.replacement_source
-        positional, keywords = _call_arguments(replacement, target_frame)
+        call_values = state.checkpoint_locals or dict(target_frame.f_locals)
+        positional, keywords = call_arguments_from_locals(replacement, call_values)
+        state.checkpoint_locals = None
+        state.checkpoint_globals = None
+        state.checkpoint_parent_branch_id = None
+        state.checkpoint_forked_step_id = None
         runtime = get_active_spacetime()
         try:
             result = replacement(*positional, **keywords)
@@ -340,6 +373,68 @@ def hotswappable(function: FunctionType) -> FunctionType:
         _set_next_line(state.trampoline_line, state.function_name)
         return {"sourceLine": old_line, "targetLine": target_line}
 
+    def prepare_checkpoint(parent_branch_id: int, step_id: int) -> dict[str, int]:
+        stack = inspect.stack()
+        target = next(
+            (entry.frame for entry in stack if entry.function == state.function_name),
+            None,
+        )
+        if target is None:
+            raise RuntimeError(f"No active {state.function_name} frame was found")
+        runtime = get_active_spacetime()
+        if runtime is None:
+            raise RuntimeError("No active SpaceTimePy recording is available")
+        context = runtime.replay.prepare(
+            parent_branch_id=parent_branch_id,
+            forked_from_step_id=step_id,
+        )
+        if context.session_id != runtime.replay.active_session_id:
+            raise RuntimeError(
+                "The selected checkpoint belongs to another SpaceTimePy session"
+            )
+        source_snapshot = context.forked_from_step.stack_snapshot
+        if source_snapshot is None or source_snapshot.code_definition_id is None:
+            raise RuntimeError("The selected checkpoint is not a recorded line snapshot")
+        source_call = runtime.data.get_function_call(source_snapshot.function_call_id)
+        if source_call.function_name != state.function_name:
+            raise RuntimeError(
+                f"Checkpoint {step_id} belongs to {source_call.function_name!r}, "
+                f"not {state.function_name!r}"
+            )
+        recorded_code = runtime.data.get_code_definition(
+            source_snapshot.code_definition_id
+        )
+        replacement_source = _function_source(state.file_path, state.function_name)
+        target_line = _mapped_line(
+            _SourceVersion(
+                content=recorded_code.code_content,
+                start_line=recorded_code.first_line_number
+                or source_snapshot.line_number,
+                end_line=(
+                    (recorded_code.first_line_number or source_snapshot.line_number)
+                    + max(0, len(recorded_code.code_content.splitlines()) - 1)
+                ),
+            ),
+            replacement_source,
+            source_snapshot.line_number,
+        )
+        state.pending = True
+        state.source_frame = target
+        state.old_line = source_snapshot.line_number
+        state.target_line = target_line
+        state.replacement_source = replacement_source
+        state.checkpoint_locals = dict(context.locals)
+        state.checkpoint_globals = dict(context.globals)
+        state.checkpoint_parent_branch_id = parent_branch_id
+        state.checkpoint_forked_step_id = step_id
+        _bind_unbound_locals(target)
+        _set_next_line(state.trampoline_line, state.function_name)
+        return {
+            "sourceLine": source_snapshot.line_number,
+            "targetLine": target_line,
+            "stepId": step_id,
+        }
+
     def finish() -> dict[str, int]:
         if state.replacement_frame is None or state.saved_locals is None:
             raise RuntimeError("No replacement frame is waiting for state restoration")
@@ -365,6 +460,7 @@ def hotswappable(function: FunctionType) -> FunctionType:
     function.__globals__[_ENTRY_NAME] = entry
     function.__globals__[_CONTINUE_NAME] = _CONTINUE
     function.__globals__[_PREPARE_NAME] = prepare
+    function.__globals__[_CHECKPOINT_NAME] = prepare_checkpoint
     function.__globals__[_FINISH_NAME] = finish
     function.__spacetimepy_hotswappable__ = True
     function.__spacetimepy_hotswap_state__ = state

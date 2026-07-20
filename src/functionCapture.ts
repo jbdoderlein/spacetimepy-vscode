@@ -9,7 +9,7 @@ import {
 } from './pythonFunctions';
 import { ServerManager } from './serverManager';
 import { TraceExplorerPanel } from './traceExplorerPanel';
-import { FunctionCallSummary } from './types';
+import { FunctionCallDetail, FunctionCallSummary, ValuePreview } from './types';
 
 interface PendingLaunch {
 	uri: vscode.Uri;
@@ -28,6 +28,11 @@ export interface SnapshotReplayRequest {
 	branchId: number;
 	stepId: number;
 	functionCallId: number;
+}
+
+interface LaunchArguments {
+	manualSource?: string;
+	previousCallId?: number;
 }
 
 export class FunctionCaptureService implements vscode.Disposable {
@@ -59,18 +64,16 @@ export class FunctionCaptureService implements vscode.Disposable {
 			return;
 		}
 
-		const argumentsSource = await vscode.window.showInputBox({
-			title: `Debug ${functionInfo.name} with SpaceTimePy`,
-			prompt: `Enter Python arguments exactly as they appear inside ${functionInfo.name}(...)`,
-			placeHolder: 'Example: [1, 4, 9], target=4 — leave empty to call without arguments',
-			ignoreFocusOut: true,
-		});
-		if (argumentsSource === undefined) {
-			return;
-		}
-
 		const runtime = await this.server.prepareCapture(uri);
 		const knownCalls = await this.callsForFunction(uri, functionInfo.name);
+		const launchArguments = await this.selectLaunchArguments(
+			uri,
+			functionInfo,
+			knownCalls,
+		);
+		if (!launchArguments) {
+			return;
+		}
 		const launchId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 		const breakpoint = this.addEntryBreakpoint(uri, functionInfo.bodyLine);
 		const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
@@ -93,8 +96,10 @@ export class FunctionCaptureService implements vscode.Disposable {
 				'--database', runtime.databasePath,
 				'--target-file', uri.fsPath,
 				'--function', functionInfo.name,
-				'--arguments', argumentsSource,
 				'--launch-id', launchId,
+				...(launchArguments.previousCallId === undefined
+					? ['--arguments', launchArguments.manualSource ?? '']
+					: ['--arguments-call-id', String(launchArguments.previousCallId)]),
 			],
 			spacetimepyLaunchId: launchId,
 		};
@@ -112,6 +117,88 @@ export class FunctionCaptureService implements vscode.Disposable {
 		if (!started) {
 			this.cleanLaunch(launchId);
 			throw new Error(`The Python debugger did not start for ${functionInfo.name}.`);
+		}
+	}
+
+	private async selectLaunchArguments(
+		uri: vscode.Uri,
+		functionInfo: PythonFunction,
+		knownCalls: FunctionCallSummary[],
+	): Promise<LaunchArguments | undefined> {
+		const input = await vscode.window.showQuickPick([
+			{
+				label: '$(edit) Enter arguments manually',
+				description: 'Use Python expressions as in the current launcher',
+				mode: 'manual' as const,
+			},
+			{
+				label: '$(history) Use a previous call',
+				description: 'Restore the exact entry arguments stored in the trace',
+				mode: 'previous' as const,
+			},
+		], {
+			title: `Debug ${functionInfo.name} with SpaceTimePy`,
+			placeHolder: 'Choose how to initialize the function call',
+		});
+		if (!input) {
+			return undefined;
+		}
+		if (input.mode === 'manual') {
+			const manualSource = await vscode.window.showInputBox({
+				title: `Debug ${functionInfo.name} with SpaceTimePy`,
+				prompt: `Enter Python arguments exactly as they appear inside ${functionInfo.name}(...)`,
+				placeHolder: 'Example: [1, 4, 9], target=4 — leave empty to call without arguments',
+				ignoreFocusOut: true,
+			});
+			return manualSource === undefined ? undefined : { manualSource };
+		}
+
+		if (knownCalls.length === 0) {
+			void vscode.window.showInformationMessage(
+				`No previous calls to ${functionInfo.name} were found for ${uri.fsPath}.`,
+			);
+			return undefined;
+		}
+		const details = await Promise.all(
+			knownCalls.slice(0, 50).map(call => this.api.getFunctionCall(call.id)),
+		);
+		const selected = await vscode.window.showQuickPick(
+			details.map(call => ({
+				label: call.started_at
+					? new Date(call.started_at).toLocaleString()
+					: `Call ${call.id}`,
+				description: this.argumentPreview(call),
+				detail: `${call.outcome ?? 'recorded'} · call ${call.id}`,
+				callId: call.id,
+			})),
+			{
+				title: `Previous calls to ${functionInfo.name}`,
+				placeHolder: 'Select the entry arguments to restore',
+				matchOnDescription: true,
+				matchOnDetail: true,
+			},
+		);
+		return selected ? { previousCallId: selected.callId } : undefined;
+	}
+
+	private argumentPreview(call: FunctionCallDetail): string {
+		const preview = Object.entries(call.locals)
+			.map(([name, value]) => `${name}=${this.valuePreview(value)}`)
+			.join(', ');
+		return preview.length > 100 ? `${preview.slice(0, 97)}…` : preview || '(no arguments)';
+	}
+
+	private valuePreview(value: ValuePreview): string {
+		if (value.error) {
+			return `<${value.type}>`;
+		}
+		if (typeof value.value === 'string') {
+			return JSON.stringify(value.value);
+		}
+		try {
+			return JSON.stringify(value.value) ?? String(value.value);
+		} catch {
+			return `<${value.type}>`;
 		}
 	}
 

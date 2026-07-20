@@ -2,7 +2,11 @@ import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { SpaceTimePyApiClient } from './api';
-import { recordedFileMatches } from './pythonFunctions';
+import {
+	findPythonFunctions,
+	functionForRecordedCall,
+	recordedFileMatches,
+} from './pythonFunctions';
 import {
 	BranchDetail,
 	FunctionCallDetail,
@@ -13,7 +17,6 @@ import {
 import {
 	BranchRecordings,
 	buildBranchTimeline,
-	findFirstFrameForEditorLine,
 	recordingTimeline,
 	TraceTimelineFrame,
 } from './traceTimeline';
@@ -36,6 +39,7 @@ interface WebviewMessage {
 	functionCallId?: unknown;
 	line?: unknown;
 	stepId?: unknown;
+	codeDefinitionId?: unknown;
 }
 
 export class TraceExplorerPanel {
@@ -46,6 +50,8 @@ export class TraceExplorerPanel {
 	private readonly lineDecoration: vscode.TextEditorDecorationType;
 	private highlightedEditor: vscode.TextEditor | null = null;
 	private highlightGeneration = 0;
+	private readonly appliedSourceVersions = new Map<string, string>();
+	private readonly sourceReplacementPrompts = new Map<string, Promise<boolean>>();
 
 	private constructor(
 		private readonly panel: vscode.WebviewPanel,
@@ -169,6 +175,10 @@ export class TraceExplorerPanel {
 						await this.highlightSource(
 							message.line,
 							typeof message.functionCallId === 'number' ? message.functionCallId : undefined,
+							typeof message.codeDefinitionId === 'string'
+								|| typeof message.codeDefinitionId === 'number'
+								? message.codeDefinitionId
+								: undefined,
 						);
 					}
 					break;
@@ -206,7 +216,11 @@ export class TraceExplorerPanel {
 		});
 	}
 
-	private async highlightSource(line: number, functionCallId?: number): Promise<void> {
+	private async highlightSource(
+		line: number,
+		functionCallId?: number,
+		codeDefinitionId?: string | number,
+	): Promise<void> {
 		const generation = ++this.highlightGeneration;
 		const recording = functionCallId === undefined
 			? undefined
@@ -219,6 +233,19 @@ export class TraceExplorerPanel {
 			throw new Error(`Recorded source file is unavailable: ${sourcePath ?? '(unknown)'}`);
 		}
 		const document = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
+		if (generation !== this.highlightGeneration) {
+			return;
+		}
+		let displayedLine = line;
+		if (recording && codeDefinitionId !== undefined) {
+			displayedLine = await this.applyRecordedSourceVersion(
+				document,
+				recording,
+				codeDefinitionId,
+				generation,
+				line,
+			);
+		}
 		if (generation !== this.highlightGeneration) {
 			return;
 		}
@@ -237,10 +264,88 @@ export class TraceExplorerPanel {
 			this.highlightedEditor.setDecorations(this.lineDecoration, []);
 		}
 		this.highlightedEditor = editor;
-		const lineIndex = Math.max(0, Math.min(line - 1, document.lineCount - 1));
+		const lineIndex = Math.max(0, Math.min(displayedLine - 1, document.lineCount - 1));
 		const range = document.lineAt(lineIndex).range;
 		editor.setDecorations(this.lineDecoration, [range]);
 		editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+	}
+
+	private async applyRecordedSourceVersion(
+		document: vscode.TextDocument,
+		recording: StackRecording,
+		codeDefinitionId: string | number,
+		generation: number,
+		recordedLine: number,
+	): Promise<number> {
+		const definition = recording.code_definitions[String(codeDefinitionId)];
+		if (!definition?.code_content) {
+			return recordedLine;
+		}
+		const functionInfo = functionForRecordedCall(
+			findPythonFunctions(document.getText()),
+			recording.function,
+		);
+		if (!functionInfo) {
+			return recordedLine;
+		}
+		const displayedLine = definition.first_line_number === null
+			? recordedLine
+			: functionInfo.sourceLine + 1 + recordedLine - definition.first_line_number;
+		const end = functionInfo.endLine + 1 < document.lineCount
+			? new vscode.Position(functionInfo.endLine + 1, 0)
+			: document.lineAt(functionInfo.endLine).rangeIncludingLineBreak.end;
+		const range = new vscode.Range(
+			new vscode.Position(functionInfo.sourceLine, 0),
+			end,
+		);
+		const eol = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
+		let replacement = definition.code_content.replace(/\r?\n/g, eol);
+		if (end.character === 0 && !replacement.endsWith(eol)) {
+			replacement += eol;
+		}
+		const current = document.getText(range);
+		if (current === replacement) {
+			this.appliedSourceVersions.set(document.uri.toString(), replacement);
+			return displayedLine;
+		}
+
+		const lastApplied = this.appliedSourceVersions.get(document.uri.toString());
+		const knownVersion = Object.values(recording.code_definitions).some(candidate => {
+			let content = candidate.code_content.replace(/\r?\n/g, eol);
+			if (end.character === 0 && !content.endsWith(eol)) {
+				content += eol;
+			}
+			return content === current;
+		});
+		if (current !== lastApplied && !knownVersion) {
+			const documentKey = document.uri.toString();
+			let prompt = this.sourceReplacementPrompts.get(documentKey);
+			if (!prompt) {
+				const createdPrompt = Promise.resolve(vscode.window.showWarningMessage(
+					`The current ${recording.function.function_name} source contains edits that are not in this trace.`,
+					'Replace function with recorded version',
+				)).then(action => action !== undefined);
+				prompt = createdPrompt;
+				this.sourceReplacementPrompts.set(documentKey, createdPrompt);
+				const clean = () => {
+					if (this.sourceReplacementPrompts.get(documentKey) === createdPrompt) {
+						this.sourceReplacementPrompts.delete(documentKey);
+					}
+				};
+				createdPrompt.then(clean, clean);
+			}
+			if (!await prompt || generation !== this.highlightGeneration) {
+				return recordedLine;
+			}
+		}
+
+		const edit = new vscode.WorkspaceEdit();
+		edit.replace(document.uri, range, replacement);
+		if (await vscode.workspace.applyEdit(edit)) {
+			this.appliedSourceVersions.set(document.uri.toString(), replacement);
+			return displayedLine;
+		}
+		return recordedLine;
 	}
 
 	private handleEditorSelection(event: vscode.TextEditorSelectionChangeEvent): void {
@@ -261,11 +366,26 @@ export class TraceExplorerPanel {
 		}
 
 		const line = event.selections[0].active.line + 1;
-		const frameIndex = findFirstFrameForEditorLine(
-			this.state.branchFrames,
-			line,
-			matchingCallIds,
-		);
+		const functions = findPythonFunctions(event.textEditor.document.getText());
+		const frameIndex = this.state.branchFrames.findIndex(frame => {
+			if (!matchingCallIds.includes(frame.functionCallId)) {
+				return false;
+			}
+			const recording = this.state?.branchRecordings[String(frame.functionCallId)];
+			if (!recording) {
+				return frame.line === line;
+			}
+			const definition = frame.codeDefinitionId === null
+				? undefined
+				: recording.code_definitions[String(frame.codeDefinitionId)];
+			const functionInfo = functionForRecordedCall(functions, recording.function);
+			const mappedLine = definition?.first_line_number !== null
+				&& definition?.first_line_number !== undefined
+				&& functionInfo
+				? functionInfo.sourceLine + 1 + frame.line - definition.first_line_number
+				: frame.line;
+			return mappedLine === line;
+		});
 		if (frameIndex >= 0) {
 			void this.panel.webview.postMessage({ type: 'selectFrame', index: frameIndex });
 		}
@@ -374,7 +494,7 @@ export class TraceExplorerPanel {
 	<header class="header">
 		<div><h1 id="title"></h1><div id="meta" class="meta"></div></div>
 		<button id="reload" title="Refresh the database and reload this trace">Reload</button>
-		<button id="replay" title="Restart current code from the selected recorded state">Restart from snapshot</button>
+		<button id="replay" title="Explore from this state in the current debugger, or start one when needed">Explore from checkpoint</button>
 	</header>
 	<div class="layout">
 		<aside class="execution">
@@ -500,7 +620,7 @@ export class TraceExplorerPanel {
 			elements.previous.disabled = currentIndex === 0;
 			elements.next.disabled = currentIndex >= frames.length - 1;
 			renderLocalTimeline(frame);
-			vscode.postMessage({ type: 'highlightSource', line: frame.line, functionCallId: frame.functionCallId });
+			vscode.postMessage({ type: 'highlightSource', line: frame.line, functionCallId: frame.functionCallId, codeDefinitionId: frame.codeDefinitionId });
 			const loaded = loadedSnapshots.get(frame.snapshotId);
 			if (loaded) {
 				renderSnapshot(loaded);

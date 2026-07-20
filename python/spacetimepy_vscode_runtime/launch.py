@@ -17,7 +17,11 @@ from spacetimepy import SpaceTime
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from spacetimepy_vscode_runtime.hotswap import captured_line_numbers, hotswappable
+from spacetimepy_vscode_runtime.hotswap import (
+    call_arguments_from_locals,
+    captured_line_numbers,
+    hotswappable,
+)
 
 
 def _load_module(target_file: Path) -> ModuleType:
@@ -51,12 +55,19 @@ def _call(function: Any, arguments: str, namespace: dict[str, Any]) -> Any:
     return asyncio.run(result) if inspect.isawaitable(result) else result
 
 
+def _call_from_locals(function: Any, values: dict[str, Any]) -> Any:
+    positional, keywords = call_arguments_from_locals(function, values)
+    result = function(*positional, **keywords)
+    return asyncio.run(result) if inspect.isawaitable(result) else result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", required=True)
     parser.add_argument("--target-file", required=True)
     parser.add_argument("--function", required=True)
     parser.add_argument("--arguments", default="")
+    parser.add_argument("--arguments-call-id", type=int)
     parser.add_argument("--launch-id", required=True)
     args = parser.parse_args()
 
@@ -86,7 +97,19 @@ def main() -> None:
                 "function": args.function,
             },
         ):
-            _call(captured, args.arguments, module.__dict__)
+            if args.arguments_call_id is None:
+                _call(captured, args.arguments, module.__dict__)
+            else:
+                previous_call = space.data.get_function_call(args.arguments_call_id)
+                if previous_call.function_name != args.function:
+                    raise ValueError(
+                        f"Call {args.arguments_call_id} recorded "
+                        f"{previous_call.function_name!r}, not {args.function!r}"
+                    )
+                previous_locals = space.data.load_references(
+                    previous_call.entry_local_references
+                )
+                _call_from_locals(captured, previous_locals)
 
 
 if __name__ == "__main__":

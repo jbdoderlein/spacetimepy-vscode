@@ -7,6 +7,8 @@ export interface PythonFunction {
 	line: number;
 	character: number;
 	bodyLine: number;
+	sourceLine: number;
+	endLine: number;
 }
 
 interface Scope {
@@ -79,6 +81,62 @@ function functionBodyLine(lines: string[], definitionLine: number, definitionInd
 	return definitionLine;
 }
 
+function functionSourceLine(lines: string[], definitionLine: number, definitionIndent: number): number {
+	let sourceLine = definitionLine;
+	let cursor = definitionLine - 1;
+	while (cursor >= 0) {
+		let decoratorLine = cursor;
+		while (decoratorLine >= 0) {
+			const text = lines[decoratorLine];
+			const trimmed = text.trim();
+			const indent = indentation(text.match(/^\s*/)?.[0] ?? '');
+			if (
+				trimmed
+				&& (indent > definitionIndent || /^[)}\]]/.test(trimmed))
+			) {
+				decoratorLine -= 1;
+				continue;
+			}
+			break;
+		}
+		if (
+			decoratorLine >= 0
+			&& indentation(lines[decoratorLine].match(/^\s*/)?.[0] ?? '') === definitionIndent
+			&& lines[decoratorLine].trim().startsWith('@')
+		) {
+			sourceLine = decoratorLine;
+			cursor = decoratorLine - 1;
+			continue;
+		}
+		break;
+	}
+	return sourceLine;
+}
+
+function functionEndLine(
+	lines: string[],
+	definitionLine: number,
+	bodyLine: number,
+	definitionIndent: number,
+): number {
+	if (bodyLine === definitionLine) {
+		return definitionLine;
+	}
+	let endLine = bodyLine;
+	for (let line = bodyLine + 1; line < lines.length; line += 1) {
+		const text = lines[line];
+		const trimmed = text.trim();
+		if (!trimmed) {
+			continue;
+		}
+		if (indentation(text.match(/^\s*/)?.[0] ?? '') <= definitionIndent) {
+			break;
+		}
+		endLine = line;
+	}
+	return endLine;
+}
+
 export function findPythonFunctions(source: string): PythonFunction[] {
 	const scopes: Scope[] = [];
 	const functions: PythonFunction[] = [];
@@ -99,18 +157,37 @@ export function findPythonFunctions(source: string): PythonFunction[] {
 		const name = match[4];
 		const qualifiedName = [...scopes.map(scope => scope.name), name].join('.');
 		if (kind === 'def') {
+			const bodyLine = functionBodyLine(lines, line, indent);
 			functions.push({
 				name,
 				qualifiedName,
 				line,
 				character: match[1].length,
-				bodyLine: functionBodyLine(lines, line, indent),
+				bodyLine,
+				sourceLine: functionSourceLine(lines, line, indent),
+				endLine: functionEndLine(lines, line, bodyLine, indent),
 			});
 		}
 		scopes.push({ indent, name });
 	}
 
 	return functions;
+}
+
+export function functionForRecordedCall(
+	functions: PythonFunction[],
+	call: FunctionCallSummary,
+): PythonFunction | undefined {
+	const named = functions.filter(candidate => candidate.name === call.function_name);
+	if (call.qualified_name) {
+		const qualified = named.find(candidate =>
+			qualifiedNameMatches(call.qualified_name ?? '', candidate.qualifiedName),
+		);
+		if (qualified) {
+			return qualified;
+		}
+	}
+	return named.length === 1 ? named[0] : undefined;
 }
 
 export function isLaunchablePythonFunction(functionInfo: PythonFunction): boolean {
