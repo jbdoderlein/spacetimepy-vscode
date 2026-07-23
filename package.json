@@ -2,6 +2,7 @@
   "name": "spacetimepy-vscode",
   "displayName": "SpaceTimePy",
   "description": "Explore SpaceTimePy recordings and replay branches in VS Code",
+  "repository": "https://github.com/jbdoderlein/spacetimepy-vscode",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.125.0"
