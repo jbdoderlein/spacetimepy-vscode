@@ -8,8 +8,9 @@ import { FunctionLaunchCodeLensProvider } from './functionLaunchCodeLens';
 import { PythonFunction } from './pythonFunctions';
 import { RecordedExecutionCodeLensProvider } from './recordedExecutionCodeLens';
 import { ServerManager, ServerStatus } from './serverManager';
+import { TraceComparisonPanel } from './traceComparisonPanel';
 import { TraceExplorerPanel } from './traceExplorerPanel';
-import { FunctionCallSummary } from './types';
+import { FunctionCallSummary, SessionSummary } from './types';
 
 function updateStatusBar(statusBar: vscode.StatusBarItem, status: ServerStatus): void {
 	switch (status.state) {
@@ -49,6 +50,44 @@ async function selectRecordedCall(calls: FunctionCallSummary[]): Promise<Functio
 		matchOnDetail: true,
 	});
 	return selected?.call;
+}
+
+function sessionLabel(session: SessionSummary): string {
+	return session.name ?? `Session ${session.id}`;
+}
+
+/**
+ * Ask for the session to compare when the command carries no context.
+ *
+ * Alignment always runs inside one session, so a session must be chosen before
+ * its branch pairs can be offered.
+ */
+async function selectSession(
+	api: SpaceTimePyApiClient,
+): Promise<SessionSummary | undefined> {
+	const sessions = (await api.getSessions()).filter(session => session.branch_count > 1);
+	if (sessions.length === 0) {
+		void vscode.window.showInformationMessage(
+			'No recorded session has a forked branch to compare. Use the hotswap action or “Explore from checkpoint” to create one.',
+		);
+		return undefined;
+	}
+	if (sessions.length === 1) {
+		return sessions[0];
+	}
+	const selected = await vscode.window.showQuickPick(
+		sessions
+			.slice()
+			.reverse()
+			.map(session => ({
+				label: sessionLabel(session),
+				description: `${session.branch_count} branches · ${session.step_kind}`,
+				detail: session.description ?? undefined,
+				session,
+			})),
+		{ placeHolder: 'Select a SpaceTimePy session to compare', matchOnDescription: true },
+	);
+	return selected?.session;
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -170,6 +209,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				void vscode.window.showErrorMessage(detail);
 			}
 		}),
+		vscode.commands.registerCommand(
+			'spacetimepy.compareTraces',
+			async (request?: { sessionId?: number; branchId?: number }) => {
+				try {
+					const sessionId = request?.sessionId ?? (await selectSession(api))?.id;
+					if (sessionId === undefined) {
+						return;
+					}
+					await TraceComparisonPanel.show(api, sessionId, output, request?.branchId);
+				} catch (error) {
+					const detail = error instanceof Error ? error.message : String(error);
+					output.appendLine(`Trace comparison failed: ${detail}`);
+					void vscode.window.showErrorMessage(`Unable to compare SpaceTimePy traces: ${detail}`);
+				}
+			},
+		),
 		vscode.commands.registerCommand(
 			'spacetimepy.openRecordedExecution',
 			async (calls: FunctionCallSummary[]) => {

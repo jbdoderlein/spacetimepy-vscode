@@ -1,9 +1,15 @@
 import {
+	AlignmentAlgorithm,
+	AlignmentAlgorithmsResponse,
+	AlignmentResult,
 	BranchDetail,
+	CodeDefinition,
 	DatabaseInfo,
 	FunctionCallDetail,
 	FunctionCallsResponse,
 	SessionDetail,
+	SessionSummary,
+	SessionsResponse,
 	StackRecording,
 	StackFrame,
 } from './types';
@@ -73,6 +79,11 @@ export class SpaceTimePyApiClient {
 		return this.request<StackRecording>(`/api/stack-recording/${callId}`);
 	}
 
+	public async getSessions(): Promise<SessionSummary[]> {
+		const response = await this.request<SessionsResponse>('/api/sessions');
+		return response.sessions;
+	}
+
 	public async getSession(sessionId: number): Promise<SessionDetail> {
 		return this.request<SessionDetail>(`/api/session/${sessionId}`);
 	}
@@ -86,6 +97,45 @@ export class SpaceTimePyApiClient {
 			`/api/snapshot/${snapshotId}`,
 		);
 		return response.snapshot;
+	}
+
+	public async getCodeDefinition(definitionId: string | number): Promise<CodeDefinition> {
+		const response = await this.request<{ code_definition: CodeDefinition }>(
+			`/api/code-definitions/${encodeURIComponent(String(definitionId))}`,
+		);
+		return response.code_definition;
+	}
+
+	public async getAlignmentAlgorithms(): Promise<AlignmentAlgorithm[]> {
+		const response = await this.request<AlignmentAlgorithmsResponse>(
+			'/api/alignment/algorithms',
+		);
+		return response.algorithms;
+	}
+
+	public async compareAlignment(options: {
+		referenceBranchId: number;
+		targetBranchId: number;
+		algorithm?: string;
+		alignmentOptions?: Record<string, unknown>;
+	}): Promise<AlignmentResult> {
+		const body: Record<string, unknown> = {
+			reference_branch_id: options.referenceBranchId,
+			target_branch_id: options.targetBranchId,
+			options: options.alignmentOptions ?? {},
+		};
+		if (options.algorithm) {
+			body.algorithm = options.algorithm;
+		}
+		const response = await this.request<{ alignment: AlignmentResult }>(
+			'/api/alignment/compare',
+			{
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			},
+		);
+		return response.alignment;
 	}
 
 	private async request<T>(route: string, init?: RequestInit): Promise<T> {

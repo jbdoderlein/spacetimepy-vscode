@@ -137,3 +137,46 @@ export interface DatabaseInfo {
 	function_call_count: number;
 	stack_snapshot_count: number;
 }
+
+export interface SessionSummary {
+	id: number;
+	name: string | null;
+	description: string | null;
+	status: string;
+	step_kind: string;
+	root_branch_id: number;
+	branch_count: number;
+	start_time: string | null;
+	end_time: string | null;
+}
+
+export interface SessionsResponse {
+	sessions: SessionSummary[];
+}
+
+export type AlignmentRelation = 'match' | 'updated' | 'inserted' | 'deleted';
+
+export interface AlignmentLink {
+	reference_step_id: number | null;
+	target_step_id: number | null;
+	relation: AlignmentRelation;
+}
+
+export interface AlignmentResult {
+	algorithm: string;
+	algorithm_version: string;
+	reference_branch_id: number;
+	target_branch_id: number;
+	links: AlignmentLink[];
+}
+
+export interface AlignmentAlgorithm {
+	name: string;
+	version: string;
+	offline: boolean;
+	online: boolean;
+}
+
+export interface AlignmentAlgorithmsResponse {
+	algorithms: AlignmentAlgorithm[];
+}

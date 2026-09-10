@@ -7,6 +7,7 @@ import {
 	functionForRecordedCall,
 	recordedFileMatches,
 } from './pythonFunctions';
+import { filterRecordedValues, WithoutRuntimeValues } from './runtimeGlobals';
 import {
 	BranchDetail,
 	FunctionCallDetail,
@@ -22,7 +23,7 @@ import {
 } from './traceTimeline';
 
 export interface TraceExplorerState {
-	call: FunctionCallDetail;
+	call: WithoutRuntimeValues<FunctionCallDetail>;
 	recording: StackRecording;
 	session: SessionDetail | null;
 	branch: BranchDetail | null;
@@ -109,10 +110,11 @@ export class TraceExplorerPanel {
 	}
 
 	private async load(): Promise<void> {
-		const [call, recording] = await Promise.all([
+		const [loadedCall, recording] = await Promise.all([
 			this.api.getFunctionCall(this.callId),
 			this.getRecording(this.callId),
 		]);
+		const call = filterRecordedValues(loadedCall);
 		const location = call.locations[call.locations.length - 1] ?? null;
 		let session: SessionDetail | null = null;
 		let branch: BranchDetail | null = null;
@@ -182,6 +184,16 @@ export class TraceExplorerPanel {
 						);
 					}
 					break;
+				case 'compareBranches':
+					if (this.state?.session) {
+						await vscode.commands.executeCommand('spacetimepy.compareTraces', {
+							sessionId: this.state.session.id,
+							branchId: this.state.selectedBranchId ?? undefined,
+						});
+					} else {
+						throw new Error('This recording has no session metadata to compare.');
+					}
+					break;
 				case 'replaySnapshot':
 					if (
 						typeof message.stepId === 'number'
@@ -208,7 +220,8 @@ export class TraceExplorerPanel {
 		const preloaded = Object.values(this.state?.branchRecordings ?? {})
 			.flatMap(recording => recording.frames)
 			.find(frame => frame.id === snapshotId);
-		const snapshot = preloaded ?? await this.api.getSnapshot(snapshotId);
+		const snapshot = preloaded
+			?? filterRecordedValues(await this.api.getSnapshot(snapshotId));
 		await this.panel.webview.postMessage({
 			type: 'snapshotLoaded',
 			snapshotId,
@@ -394,7 +407,10 @@ export class TraceExplorerPanel {
 	private getRecording(callId: number): Promise<StackRecording> {
 		let recording = this.recordingCache.get(callId);
 		if (!recording) {
-			recording = this.api.getStackRecording(callId);
+			recording = this.api.getStackRecording(callId).then(loaded => ({
+				...loaded,
+				frames: loaded.frames.map(filterRecordedValues),
+			}));
 			this.recordingCache.set(callId, recording);
 		}
 		return recording;
@@ -487,6 +503,7 @@ export class TraceExplorerPanel {
 		.value-object { color: var(--vscode-symbolIcon-objectForeground, var(--vscode-debugTokenExpression-value, var(--vscode-foreground))); }
 		.error { color: var(--vscode-errorForeground); }
 		.empty { color: var(--vscode-descriptionForeground); font-style: italic; }
+		.hidden-note { margin-top: 6px; color: var(--vscode-descriptionForeground); font-size: .85em; }
 		@media (max-width: 720px) { .layout { grid-template-columns: 1fr; } .execution { border-right: 0; border-bottom: 1px solid var(--vscode-panel-border); } }
 	</style>
 </head>
@@ -494,6 +511,7 @@ export class TraceExplorerPanel {
 	<header class="header">
 		<div><h1 id="title"></h1><div id="meta" class="meta"></div></div>
 		<button id="reload" title="Refresh the database and reload this trace">Reload</button>
+		<button id="compare" title="Align this branch with one of its forks line by line">Compare branches</button>
 		<button id="replay" title="Explore from this state in the current debugger, or start one when needed">Explore from checkpoint</button>
 	</header>
 	<div class="layout">
@@ -515,7 +533,7 @@ export class TraceExplorerPanel {
 	<script nonce="${nonce}">
 		const vscode = acquireVsCodeApi();
 		const state = ${serialized};
-		const elements = Object.fromEntries(['title','meta','branches','branch-empty','error','path-title','position','timeline','local-timeline','local-position','locals','globals','outcome','previous','next','reload','replay'].map(function(id) { return [id, document.getElementById(id)]; }));
+		const elements = Object.fromEntries(['title','meta','branches','branch-empty','error','path-title','position','timeline','local-timeline','local-position','locals','globals','outcome','previous','next','reload','compare','replay'].map(function(id) { return [id, document.getElementById(id)]; }));
 		const loadedSnapshots = new Map();
 		let frames = [];
 		let currentIndex = 0;
@@ -603,7 +621,9 @@ export class TraceExplorerPanel {
 				renderSnapshot({
 					line: entryLine,
 					locals: state.call.locals || {},
-					globals: state.call.globals || {}
+					globals: state.call.globals || {},
+					hidden_runtime_locals: state.call.hidden_runtime_locals,
+					hidden_runtime_globals: state.call.hidden_runtime_globals
 				});
 				vscode.postMessage({ type: 'highlightSource', line: entryLine, functionCallId: state.call.id });
 				return;
@@ -650,8 +670,8 @@ export class TraceExplorerPanel {
 				renderVariables(elements.globals, {});
 				return;
 			}
-			renderVariables(elements.locals, snapshot.locals || {});
-			renderVariables(elements.globals, snapshot.globals || {});
+			renderVariables(elements.locals, snapshot.locals || {}, snapshot.hidden_runtime_locals);
+			renderVariables(elements.globals, snapshot.globals || {}, snapshot.hidden_runtime_globals);
 		}
 
 		function valueText(value) {
@@ -674,11 +694,22 @@ export class TraceExplorerPanel {
 			renderVariables(elements.outcome, value ? { [label]: value } : {});
 		}
 
-		function renderVariables(container, variables) {
+		function hiddenNote(count) {
+			const note = document.createElement('div');
+			note.className = 'hidden-note';
+			note.textContent = count + ' SpaceTimePy runtime ' + (count === 1 ? 'value' : 'values') + ' hidden';
+			note.title = 'Names the SpaceTimePy hotswap runtime adds to the recorded frame.';
+			return note;
+		}
+
+		function renderVariables(container, variables, hidden) {
 			container.replaceChildren();
+			const hiddenCount = hidden || 0;
 			const entries = Object.entries(variables);
 			if (entries.length === 0) {
-				const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = 'No recorded values.'; container.appendChild(empty); return;
+				const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = 'No recorded values.'; container.appendChild(empty);
+				if (hiddenCount > 0) { container.appendChild(hiddenNote(hiddenCount)); }
+				return;
 			}
 			const table = document.createElement('table');
 			const header = document.createElement('tr');
@@ -698,12 +729,14 @@ export class TraceExplorerPanel {
 				body.appendChild(row);
 			});
 			table.appendChild(body); container.appendChild(table);
+			if (hiddenCount > 0) { container.appendChild(hiddenNote(hiddenCount)); }
 		}
 
 		elements.timeline.oninput = function(event) { selectFrame(Number(event.target.value)); };
 		elements.previous.onclick = function() { selectFrame(currentIndex - 1); };
 		elements.next.onclick = function() { selectFrame(currentIndex + 1); };
 		elements.reload.onclick = function() { elements.reload.disabled = true; vscode.postMessage({ type: 'reload' }); };
+		elements.compare.onclick = function() { vscode.postMessage({ type: 'compareBranches' }); };
 		elements.replay.onclick = function() {
 			const frame = frames[currentIndex];
 			if (frame) { vscode.postMessage({ type: 'replaySnapshot', stepId: frame.stepId, functionCallId: frame.functionCallId }); }

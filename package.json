@@ -17,7 +17,8 @@
     "onCommand:spacetimepy.restartServer",
     "onCommand:spacetimepy.refreshTraces",
     "onCommand:spacetimepy.debugFunction",
-    "onCommand:spacetimepy.hotswapCurrentFrame"
+    "onCommand:spacetimepy.hotswapCurrentFrame",
+    "onCommand:spacetimepy.compareTraces"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -41,6 +42,11 @@
         "command": "spacetimepy.hotswapCurrentFrame",
         "title": "SpaceTimePy: Hotswap Current Frame",
         "icon": "$(zap)"
+      },
+      {
+        "command": "spacetimepy.compareTraces",
+        "title": "SpaceTimePy: Compare Branch Traces",
+        "icon": "$(git-compare)"
       }
     ],
     "menus": {

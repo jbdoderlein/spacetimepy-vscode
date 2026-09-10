@@ -12,8 +12,24 @@ This extension explores SpaceTimePy v2 recordings directly beside Python source 
 - The debugger lightning action reloads edited function code, restores the paused frame state, and records the replacement suffix as a child branch whose first step is the mapped replacement of the paused source line.
 - **Explore from checkpoint** reuses a compatible paused SpaceTimePy debug session and forks the selected historical step. When no debugger is open, it starts a new session instead.
 - Selecting a trace step changes only the corresponding function in the editor to its recorded code definition. These edits remain unsaved and undoable; the extension asks before replacing unrecognized user edits.
+- Recorded values that the bundled hotswap runtime adds to a captured frame are hidden from the Locals and Globals cards, which report how many were hidden.
+- **Trace comparison** aligns a branch with one of its forks step by step, using the alignment service of SpaceTimePy. Each aligned row is classified as match, updated, inserted or deleted, the two recorded code versions are shown side by side with the aligned line highlighted in both, and an execution graph draws one node per executed line, colouring the lines only one branch reached.
 
-Comparison and LivEx functionality from the previous extension are intentionally not included.
+LivEx functionality from the previous extension is intentionally not included.
+
+## Trace comparison
+
+Open **SpaceTimePy: Compare Branch Traces** from the command palette, or use **Compare branches** in the trace explorer header to compare the branch already on screen.
+
+Alignment runs inside one session and always compares a reference branch with one of its direct forks, starting at the step the fork was created from. The extension therefore offers exactly those branch pairs; a session without a fork has nothing to compare, so record one first with the hotswap action or **Explore from checkpoint**.
+
+For a line-granularity trace the default algorithm is `stack-snapshot`, which diffs the two recorded code definitions and derives a line-to-line correspondence from that diff before matching the trace steps. Another registered offline algorithm can be selected instead. Alignments are calculated on demand by the API and are not stored.
+
+The panel shows the same alignment three ways: the aligned rows as a list, the two recorded sources side by side, and an execution graph.
+
+The graph carries one node per executed line. A line both branches ran is a single grey node, so the two traces share one spine that splits where only one branch executed a line and joins again at the next aligned line. Reference-only lines are red on the left, fork-only lines green on the right, and a shared line whose code changed is yellow. Edges follow the recorded order of each trace and take the colour of the branches that took them, so a loop appears as an edge returning to an earlier node and a repeated line keeps one node with its visit count beside it. Selecting a node selects its aligned row, and selecting a row highlights its node.
+
+Selecting an aligned row shows both recorded source versions side by side and highlights the aligned line in each. An inserted or deleted row has no counterpart on one side, so that pane keeps the nearest recorded context instead. While **Reveal aligned line in the editor** is enabled, the row also highlights the matching line in the open source file. That panel never rewrites the file: it maps the recorded line through the current position of the same function, and the highlight says so when the file no longer matches the recorded version.
 
 ## Debug and replay workflow
 
