@@ -39,6 +39,20 @@ The trace explorer opens beside the source when the debugger first pauses in the
 
 While that debug session is paused, save an edited function and use the lightning button in the debug toolbar. The hotswap runtime maps the paused line to the edited function, restores locals, records that migrated state as the replacement for the fork step, and tells SpaceTimePy to continue in a child branch of the same session.
 
+Automatic destinations use SpaceTimePy's public `CodeDiffLineMapper`, which also supplies source-line correspondences for trace comparison.
+Direct hotswap compares the active function's previous source with the edited function.
+Both checkpoint paths compare the selected snapshot's recorded source with the edited function.
+Each source excerpt keeps its absolute line offset.
+This comparison does not align execution traces or require the edited function to execute.
+
+The shared mapper pairs statements at their starting lines.
+For example, formatting `result = left + right` across several lines keeps the assignment start as the destination.
+If the source line has no correspondence, the runtime searches backward through source lines.
+It uses the nearest preceding line with a correspondence and selects that line's target.
+This can execute an earlier statement again.
+If no such line exists, automatic replacement reports an error before debugger redirection or child-branch creation.
+An explicit destination passed to the runtime's `prepare(line_number)` remains the user's choice and must be within the edited function.
+
 From a line-level trace, choose a snapshot and use **Explore from checkpoint**. If the same SpaceTimePy execution is paused, the extension restores the selected locals and safe data globals into a replacement frame and records a new branch in that session. With no active debugger, it opens the selected source under `debugpy` and starts the branch there. An active unrelated debug session must be closed first.
 
 As the trace timeline moves between code versions, the editor replaces only the recorded function—not the whole file—and does not save the change. Navigating between known recorded versions is automatic. If that function has user edits not recognized as a recorded or explorer-applied version, replacement requires confirmation. Editing the displayed version and choosing hotswap or checkpoint exploration saves it through the normal debugger workflow.
@@ -73,3 +87,12 @@ Empty databases are initialized with the same `TraceData.open(..., create_if_mis
 All command and setting identifiers use the `spacetimepy` namespace.
 
 Function capture and replay require the automatically selected local database. They are unavailable when `spacetimepy.apiUrl` points to an external server because that setting does not identify a writable database path.
+
+## Runtime tests
+
+Use a Python environment with the local SpaceTimePy package and its dependencies installed.
+Run the runtime regression tests from the extension directory:
+
+```shell
+PYTHONPATH=python python -m unittest discover -s python/tests -v
+```

@@ -54,7 +54,24 @@ def main() -> None:
         raise TypeError(f"{args.function!r} is not a top-level Python function")
 
     with SpaceTime.open(args.database) as space:
-        context = space.replay.begin(
+        context = space.replay.prepare(
+            parent_branch_id=args.parent_branch,
+            forked_from_step_id=args.forked_from_step,
+        )
+        source_snapshot = context.forked_from_step.stack_snapshot
+        if source_snapshot is None or source_snapshot.code_definition_id is None:
+            raise RuntimeError("The selected step is not a recorded line snapshot")
+        recorded_code = space.data.get_code_definition(
+            source_snapshot.code_definition_id
+        )
+        target = prepare_snapshot_replay(
+            target,
+            locals=context.locals,
+            source_line=source_snapshot.line_number,
+            recorded_source=recorded_code.code_content,
+            recorded_first_line=recorded_code.first_line_number or source_snapshot.line_number,
+        )
+        space.replay.begin(
             parent_branch_id=args.parent_branch,
             forked_from_step_id=args.forked_from_step,
             name="VS Code snapshot replay",
@@ -64,20 +81,7 @@ def main() -> None:
                 "launch_id": args.launch_id,
             },
         )
-        source_snapshot = context.forked_from_step.stack_snapshot
-        if source_snapshot is None or source_snapshot.code_definition_id is None:
-            raise RuntimeError("The selected step is not a recorded line snapshot")
-        recorded_code = space.data.get_code_definition(
-            source_snapshot.code_definition_id
-        )
         _restore_globals(module, context.globals)
-        target = prepare_snapshot_replay(
-            target,
-            locals=context.locals,
-            source_line=source_snapshot.line_number,
-            recorded_source=recorded_code.code_content,
-            recorded_first_line=recorded_code.first_line_number or source_snapshot.line_number,
-        )
         target = space.capture.line(
             target,
             # The debugger first stops at the injected entry trampoline.

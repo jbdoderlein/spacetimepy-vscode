@@ -14,13 +14,13 @@ import importlib.util
 import inspect
 import linecache
 from dataclasses import dataclass
-from difflib import SequenceMatcher
+from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType, FunctionType, ModuleType
 from typing import Any
 
 from bytecode import Bytecode, Instr, Label
-from spacetimepy import get_active_spacetime
+from spacetimepy import CodeDefinitionDTO, CodeDiffLineMapper, get_active_spacetime
 
 
 _ENTRY_NAME = "_spacetimepy_hotswap_entry"
@@ -89,20 +89,33 @@ def _function_source(file_path: Path, function_name: str) -> _SourceVersion:
 
 
 def _mapped_line(old: _SourceVersion, new: _SourceVersion, old_line: int) -> int:
-    old_lines = old.content.splitlines()
-    new_lines = new.content.splitlines()
-    relative = max(0, min(old_line - old.start_line, len(old_lines) - 1))
-    matcher = SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
-    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
-        if old_start <= relative < old_end:
-            if tag == "equal":
-                mapped = new_start + (relative - old_start)
-            elif new_end > new_start:
-                mapped = new_start + min(relative - old_start, new_end - new_start - 1)
-            else:
-                mapped = min(new_start, max(0, len(new_lines) - 1))
-            return new.start_line + mapped
-    return new.start_line + min(relative, max(0, len(new_lines) - 1))
+    """Map this source line, or its nearest preceding correspondence."""
+
+    mapping = CodeDiffLineMapper().compare(_code_definition(old), _code_definition(new))
+    preceding = [
+        pair for pair in mapping.correspondences if pair.reference_line <= old_line
+    ]
+    if not preceding:
+        raise ValueError(
+            f"Automatic hotswap is unavailable: source line {old_line} has no "
+            "correspondence at or before it. Specify a destination line."
+        )
+    return max(preceding, key=lambda pair: pair.reference_line).target_line
+
+
+def _code_definition(source: _SourceVersion) -> CodeDefinitionDTO:
+    """Describe a source excerpt in memory for the public line mapper."""
+
+    return CodeDefinitionDTO(
+        id="",
+        name="hotswap",
+        qualified_name=None,
+        kind="function",
+        module_path="",
+        code_content=source.content,
+        first_line_number=source.start_line,
+        created_at=datetime.now(timezone.utc),
+    )
 
 
 def _set_next_line(line: int, function_name: str) -> None:
@@ -359,7 +372,11 @@ def hotswappable(function: FunctionType) -> FunctionType:
             raise RuntimeError(f"No active {state.function_name} frame was found")
         replacement_source = _function_source(state.file_path, state.function_name)
         old_line = target.f_lineno
-        target_line = line_number or _mapped_line(state.source, replacement_source, old_line)
+        target_line = (
+            line_number
+            if line_number is not None
+            else _mapped_line(state.source, replacement_source, old_line)
+        )
         if not replacement_source.start_line <= target_line <= replacement_source.end_line:
             raise ValueError(
                 f"Target line {target_line} is outside {state.function_name}"
@@ -477,14 +494,18 @@ def prepare_snapshot_replay(
 ) -> FunctionType:
     """Prepare a newly called function to receive one recorded frame state."""
 
-    function = hotswappable(function)
-    state: _HotSwapState = function.__spacetimepy_hotswap_state__
+    target_source = _function_source(
+        Path(function.__code__.co_filename).resolve(), function.__name__
+    )
     old_source = _SourceVersion(
         content=recorded_source,
         start_line=recorded_first_line,
         end_line=recorded_first_line + max(0, len(recorded_source.splitlines()) - 1),
     )
-    state.target_line = _mapped_line(old_source, state.source, source_line)
+    target_line = _mapped_line(old_source, target_source, source_line)
+    function = hotswappable(function)
+    state: _HotSwapState = function.__spacetimepy_hotswap_state__
+    state.target_line = target_line
     state.old_line = source_line
     state.initial_replay_locals = dict(locals)
     return function
