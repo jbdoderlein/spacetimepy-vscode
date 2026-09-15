@@ -61,9 +61,9 @@ class _HotSwapState:
     replacement_forked_step_id: int | None = None
     replacement_operation: str = "live-hotswap"
     checkpoint_locals: dict[str, Any] | None = None
-    checkpoint_globals: dict[str, Any] | None = None
-    checkpoint_parent_branch_id: int | None = None
-    checkpoint_forked_step_id: int | None = None
+    prepared_globals: dict[str, Any] | None = None
+    prepared_parent_branch_id: int | None = None
+    prepared_forked_step_id: int | None = None
 
 
 def _function_source(file_path: Path, function_name: str) -> _SourceVersion:
@@ -175,13 +175,20 @@ def _restore_locals(frame: FrameType, values: dict[str, Any]) -> None:
         locals_to_fast(frame, 0)
 
 
+def _is_data_global(name: str, value: Any) -> bool:
+    return not (
+        name.startswith("_spacetimepy_")
+        or name == "__builtins__"
+        or isinstance(value, ModuleType)
+        or inspect.isroutine(value)
+        or inspect.isclass(value)
+    )
+
+
 def _restore_globals(module: ModuleType, values: dict[str, Any]) -> None:
     for name, value in values.items():
-        if name.startswith("_spacetimepy_") or name == "__builtins__":
-            continue
-        if isinstance(value, ModuleType) or inspect.isroutine(value) or inspect.isclass(value):
-            continue
-        module.__dict__[name] = value
+        if _is_data_global(name, value):
+            module.__dict__[name] = value
 
 
 def _bind_unbound_locals(frame: FrameType) -> None:
@@ -306,7 +313,7 @@ def hotswappable(function: FunctionType) -> FunctionType:
                     "target_line": state.target_line,
                     **(
                         {"checkpoint_step_id": state.replacement_forked_step_id}
-                        if state.replacement_forked_step_id is not None
+                        if state.replacement_operation == "checkpoint-replay"
                         else {}
                     ),
                 },
@@ -324,9 +331,10 @@ def hotswappable(function: FunctionType) -> FunctionType:
         module = inspect.getmodule(target_frame)
         if module is None:
             raise RuntimeError("Cannot find the module owning the active function")
+        if state.prepared_globals is None:
+            raise RuntimeError("No captured globals are prepared for replacement")
         replacement_module = _reload_module(module, state.file_path)
-        if state.checkpoint_globals is not None:
-            _restore_globals(replacement_module, state.checkpoint_globals)
+        _restore_globals(replacement_module, state.prepared_globals)
         replacement = getattr(replacement_module, state.function_name)
         if not isinstance(replacement, FunctionType):
             raise TypeError(f"Reloaded {state.function_name!r} is not a Python function")
@@ -334,11 +342,11 @@ def hotswappable(function: FunctionType) -> FunctionType:
         replacement_state: _HotSwapState = replacement.__spacetimepy_hotswap_state__
         replacement_state.replacement_source_frame = target_frame
         replacement_state.replacement_locals = state.checkpoint_locals
-        replacement_state.replacement_parent_branch_id = state.checkpoint_parent_branch_id
-        replacement_state.replacement_forked_step_id = state.checkpoint_forked_step_id
+        replacement_state.replacement_parent_branch_id = state.prepared_parent_branch_id
+        replacement_state.replacement_forked_step_id = state.prepared_forked_step_id
         replacement_state.replacement_operation = (
             "checkpoint-replay"
-            if state.checkpoint_forked_step_id is not None
+            if state.checkpoint_locals is not None
             else "live-hotswap"
         )
         replacement_state.old_line = state.old_line
@@ -347,9 +355,9 @@ def hotswappable(function: FunctionType) -> FunctionType:
         call_values = state.checkpoint_locals or dict(target_frame.f_locals)
         positional, keywords = call_arguments_from_locals(replacement, call_values)
         state.checkpoint_locals = None
-        state.checkpoint_globals = None
-        state.checkpoint_parent_branch_id = None
-        state.checkpoint_forked_step_id = None
+        state.prepared_globals = None
+        state.prepared_parent_branch_id = None
+        state.prepared_forked_step_id = None
         runtime = get_active_spacetime()
         try:
             result = replacement(*positional, **keywords)
@@ -365,7 +373,7 @@ def hotswappable(function: FunctionType) -> FunctionType:
     def prepare(line_number: int | None = None) -> dict[str, int]:
         stack = inspect.stack()
         target = next(
-            (entry.frame for entry in stack if entry.function == state.function_name),
+            (entry.frame for entry in stack if entry.frame.f_code is function.__code__),
             None,
         )
         if target is None:
@@ -381,6 +389,28 @@ def hotswappable(function: FunctionType) -> FunctionType:
             raise ValueError(
                 f"Target line {target_line} is outside {state.function_name}"
             )
+        runtime = get_active_spacetime()
+        if runtime is None:
+            raise RuntimeError("No active SpaceTimePy recording is available")
+        context = runtime.replay.prepare_active_execution(source_frame=target)
+        snapshot = context.forked_from_step.stack_snapshot
+        if snapshot is None or snapshot.code_definition_id is None:
+            raise RuntimeError("The active frame has no recorded line snapshot")
+        failed_globals = [
+            name
+            for name in snapshot.attributes.get("capture_errors", {})
+            if name in target.f_globals
+            and name not in snapshot.global_references
+            and _is_data_global(name, target.f_globals[name])
+        ]
+        if failed_globals:
+            raise RuntimeError(
+                "The active snapshot could not capture globals: "
+                + ", ".join(sorted(failed_globals))
+            )
+        state.prepared_globals = dict(context.globals)
+        state.prepared_parent_branch_id = context.parent_branch_id
+        state.prepared_forked_step_id = context.forked_from_step.id
         state.pending = True
         state.source_frame = target
         state.old_line = old_line
@@ -393,7 +423,7 @@ def hotswappable(function: FunctionType) -> FunctionType:
     def prepare_checkpoint(parent_branch_id: int, step_id: int) -> dict[str, int]:
         stack = inspect.stack()
         target = next(
-            (entry.frame for entry in stack if entry.function == state.function_name),
+            (entry.frame for entry in stack if entry.frame.f_code is function.__code__),
             None,
         )
         if target is None:
@@ -441,9 +471,9 @@ def hotswappable(function: FunctionType) -> FunctionType:
         state.target_line = target_line
         state.replacement_source = replacement_source
         state.checkpoint_locals = dict(context.locals)
-        state.checkpoint_globals = dict(context.globals)
-        state.checkpoint_parent_branch_id = parent_branch_id
-        state.checkpoint_forked_step_id = step_id
+        state.prepared_globals = dict(context.globals)
+        state.prepared_parent_branch_id = parent_branch_id
+        state.prepared_forked_step_id = step_id
         _bind_unbound_locals(target)
         _set_next_line(state.trampoline_line, state.function_name)
         return {

@@ -37,7 +37,12 @@ Use **Debug with SpaceTimePy** above a top-level Python function. Choose either 
 
 The trace explorer opens beside the source when the debugger first pauses in the function. At every later pause, the debug process commits its current recording and the explorer refreshes to the latest step and branch.
 
-While that debug session is paused, save an edited function and use the lightning button in the debug toolbar. The hotswap runtime maps the paused line to the edited function, restores locals, records that migrated state as the replacement for the fork step, and tells SpaceTimePy to continue in a child branch of the same session.
+While that debug session is paused, save an edited function and use the lightning button in the debug toolbar. The hotswap runtime maps the paused line to the edited function and restores live locals.
+Before module reload, it loads data globals from the active frame’s captured step in the current branch.
+After reload, it restores those globals and records the replacement state as the child branch’s first step.
+Modules, functions, classes, builtins, and internal runtime names keep the existing restoration exclusions.
+Missing captured steps or stored values cause an error before reload.
+This requires the core `replay.prepare_active_execution(source_frame=...)` API.
 
 Automatic destinations use SpaceTimePy's public `CodeDiffLineMapper`, which also supplies source-line correspondences for trace comparison.
 Direct hotswap compares the active function's previous source with the edited function.

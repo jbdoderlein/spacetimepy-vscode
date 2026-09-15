@@ -90,7 +90,7 @@ class TestHotswapMapping(unittest.TestCase):
                         self.path.write_text(
                             "\n" * 19 + edited.content, encoding="utf-8"
                         )
-                    frame = SimpleNamespace(f_lineno=source_line, f_locals={})
+                    frame = SimpleNamespace(f_lineno=source_line, f_locals={}, f_code=function.__code__)
                     runtime = Mock()
                     runtime.replay.active_session_id = 7
                     runtime.replay.prepare.return_value = SimpleNamespace(
@@ -104,6 +104,10 @@ class TestHotswapMapping(unittest.TestCase):
                                 line_number=source_line,
                             )
                         ),
+                    )
+                    runtime.replay.prepare_active_execution.return_value = SimpleNamespace(
+                        globals={}, parent_branch_id=2,
+                        forked_from_step=SimpleNamespace(id=3, stack_snapshot=SimpleNamespace(code_definition_id="recorded", attributes={})),
                     )
                     runtime.data.get_function_call.return_value = SimpleNamespace(
                         function_name="f"
@@ -164,8 +168,14 @@ class TestHotswapMapping(unittest.TestCase):
         function = hotswap.hotswappable(
             self.function(self.source("def f(x):\n    return x\n"))
         )
-        frame = SimpleNamespace(f_lineno=2, f_locals={})
+        frame = SimpleNamespace(f_lineno=2, f_locals={}, f_code=function.__code__)
+        runtime = Mock()
+        runtime.replay.prepare_active_execution.return_value = SimpleNamespace(
+            globals={}, parent_branch_id=2,
+            forked_from_step=SimpleNamespace(id=3, stack_snapshot=SimpleNamespace(code_definition_id="recorded", attributes={})),
+        )
         with (
+            patch.object(hotswap, "get_active_spacetime", return_value=runtime),
             patch.object(
                 hotswap.inspect,
                 "stack",
@@ -200,7 +210,7 @@ class TestHotswapMapping(unittest.TestCase):
                 )
                 state = function.__spacetimepy_hotswap_state__
                 original_state = vars(state).copy()
-                frame = SimpleNamespace(f_lineno=0, f_locals={})
+                frame = SimpleNamespace(f_lineno=0, f_locals={}, f_code=function.__code__)
                 runtime = Mock()
                 runtime.replay.active_session_id = 7
                 runtime.replay.prepare.return_value = SimpleNamespace(
